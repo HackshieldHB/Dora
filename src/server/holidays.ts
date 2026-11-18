@@ -1,7 +1,7 @@
-import type { PrismaClient } from "@prisma/client";
+import type { DbClient } from "@/lib/db";
 import { publicHolidays } from "@/lib/holidays";
 
-export async function ensureNationalHolidays(db: PrismaClient, companyId: string, year: number) {
+export async function ensureNationalHolidays(db: DbClient, companyId: string, year: number) {
   const { days } = publicHolidays(year);
   for (const day of days) {
     if (day.kind !== "NATIONAL") continue;
@@ -10,7 +10,7 @@ export async function ensureNationalHolidays(db: PrismaClient, companyId: string
   }
 }
 
-export async function applyJointHolidays(db: PrismaClient, companyId: string, year: number) {
+export async function applyJointHolidays(db: DbClient, companyId: string, year: number) {
   const joint = publicHolidays(year).days.filter((day) => day.kind === "JOINT");
   if (joint.length === 0) throw new Error("This year has no joint-leave dates in the three-minister decree yet.");
   let added = 0;

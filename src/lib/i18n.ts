@@ -146,6 +146,11 @@ const id: Record<string, string> = {
   "Explore features": "Lihat fitur",
   "Your session is about to expire": "Sesi kamu akan berakhir.",
   "Session expired. Please sign in again.": "Sesi berakhir. Silakan masuk lagi.",
+  "The email or password is not correct.": "Email atau kata sandi tidak benar.",
+  "This account is temporarily locked after failed sign-in attempts.": "Akun ini dikunci sementara setelah beberapa kali gagal masuk.",
+  "Too many failed sign-in attempts from this network. Try again in 15 minutes.": "Terlalu banyak percobaan masuk yang gagal dari jaringan ini. Coba lagi dalam 15 menit.",
+  "DORA cannot be used until its license problem is fixed.": "DORA belum bisa dipakai sampai masalah lisensinya diperbaiki.",
+  "Sign-in failed.": "Gagal masuk.",
   "Platform features": "Fitur platform",
   "Four parts of the workday, in one place.": "Empat bagian hari kerja, dalam satu tempat.",
   "Smart Attendance": "Absensi pintar",
@@ -1472,6 +1477,9 @@ const GENERATED: [RegExp, (match: RegExpMatchArray) => string][] = [
   [/^Your manager saved a note from (\d{4}-\d{2}-\d{2})\.$/, (match) => `Atasanmu menyimpan catatan dari ${match[1]}.`],
   [/^Your DORA account is ready\. Temporary password: (.+)$/, (match) => `Akun DORA kamu siap. Kata sandi sementara: ${match[1]}`],
   [/^Payslip (.+)$/, (match) => `Slip gaji ${match[1]}`],
+  [/^DORA cannot be used until its license problem is fixed\. (.+)$/, (match) => `DORA belum bisa dipakai sampai masalah lisensinya diperbaiki. ${match[1]}`],
+  [/^The DORA license expires on (\d{4}-\d{2}-\d{2}) \((\d+) days left\)\. Contact your vendor to renew it\.$/, (match) => `Lisensi DORA berakhir pada ${match[1]} (sisa ${match[2]} hari). Hubungi vendor untuk memperpanjang.`],
+  [/^The DORA license covers (\d+) active employees and that limit is reached\. Contact your vendor to extend it\.$/, (match) => `Lisensi DORA mencakup ${match[1]} karyawan aktif dan batas itu sudah tercapai. Hubungi vendor untuk menambahnya.`],
   [/^Your payslip for (.+) is attached as a PDF\.$/, (match) => `Slip gaji ${match[1]} dilampirkan sebagai PDF.`],
 ];
 

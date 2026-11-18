@@ -10,6 +10,7 @@ import { placementError } from "@/lib/placement";
 import { todayJakarta } from "@/lib/format";
 import { normalizeNpwp } from "@/lib/domain";
 import { hasPerm } from "@/lib/context";
+import { decryptText, encryptText } from "@/lib/crypto";
 
 const root = path.join(process.cwd(), "storage", "imports");
 
@@ -134,7 +135,8 @@ export async function stageEmployeeImport(ctx: Ctx, file: File) {
   const batch = randomBytes(12).toString("hex");
   await mkdir(root, { recursive: true });
   const payload: StageFile = { companyId: ctx.companyId, userId: ctx.userId, rows };
-  await writeFile(stagePath(ctx, batch), JSON.stringify(payload));
+  // The staged rows hold NIK, NPWP and bank accounts, so the temporary file is encrypted too.
+  await writeFile(stagePath(ctx, batch), encryptText(JSON.stringify(payload)), { mode: 0o600 });
   return batch;
 }
 
@@ -142,7 +144,7 @@ export async function readEmployeeImport(ctx: Ctx, batch: string) {
   const file = stagePath(ctx, batch);
   if (!file) return null;
   try {
-    const payload = JSON.parse(await readFile(file, "utf8")) as StageFile;
+    const payload = JSON.parse(decryptText(await readFile(file, "utf8"))) as StageFile;
     if (payload.companyId !== ctx.companyId || payload.userId !== ctx.userId) return null;
     return payload.rows;
   } catch {

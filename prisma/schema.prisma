@@ -19,6 +19,9 @@ model PlatformSetting {
   tempPasswordHours Int @default(24)
   regulatoryCheckedAt DateTime?
   regulatoryCheckResult String @default("")
+  // Latest time the license check has seen. A clock set far behind this means someone
+  // rolled the system clock back to stretch an expired license.
+  licenseSeenAt     DateTime?
 }
 
 model Company {

@@ -1,11 +1,23 @@
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../src/lib/db";
 import { addDays, calculatePay, SAMPLE_RULE, weekday } from "../src/lib/domain";
 import { monthBounds, todayJakarta } from "../src/lib/format";
 import { hashPassword } from "../src/lib/password";
 import { DEFAULT_ROLE_TEMPLATES, PLATFORM_PERMISSIONS } from "../src/lib/permissions";
 import { ensureLeaveCatalog } from "../src/server/leave-catalog";
 
-const prisma = new PrismaClient();
+try {
+  process.loadEnvFile();
+} catch {
+  // No .env file: rely on the real environment.
+}
+
+// Demo data only. This wipes every table and creates accounts that all share one known password,
+// so it must never run on a client's server. Use `npm run setup:production` there instead.
+if (process.env.NODE_ENV === "production" && process.env.DORA_ALLOW_DEMO_SEED !== "true") {
+  console.error("Refusing to run the demo seed with NODE_ENV=production. Use `npm run setup:production` for a real installation.");
+  process.exit(1);
+}
+
 const password = "Dora#2026";
 
 async function empty() {
