@@ -250,6 +250,17 @@ export function leaveRemaining(input: {
   return Math.max(0, input.entitled + input.carryIn - input.used);
 }
 
+export function cappedLeaveAllowance(input: { balanceMode: string; quotaDays: number; maxCalendarDays: number }): { entitled: number; calendar: boolean } | null {
+  if (input.balanceMode !== "NONE") return null;
+  if (input.maxCalendarDays > 0) return { entitled: input.maxCalendarDays, calendar: true };
+  if (input.quotaDays > 0) return { entitled: input.quotaDays, calendar: false };
+  return null;
+}
+
+export function cappedLeaveRemaining(entitled: number, used: number): number {
+  return Math.max(0, entitled - used);
+}
+
 export function policyEntitled(input: { mode: string; quotaDays: number; quotaPeriod: string; accrualRate: number; asOf: string }): number {
   if (input.mode === "NONE") return Number.POSITIVE_INFINITY;
   if (input.mode === "ACCRUAL") {

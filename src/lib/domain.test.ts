@@ -19,6 +19,8 @@ import {
   travelDateError,
   travelDayError,
   normalizeNpwp,
+  cappedLeaveAllowance,
+  cappedLeaveRemaining,
   leaveRemaining,
   withinComingDays,
   loanInstallment,
@@ -115,6 +117,13 @@ describe("leave and attendance", () => {
     expect(policyEntitled({ mode: "ACCRUAL", quotaDays: 12, quotaPeriod: "YEARLY", accrualRate: 1, asOf: "2026-11-04" })).toBe(11);
     expect(policyEntitled({ mode: "UPFRONT", quotaDays: 12, quotaPeriod: "YEARLY", accrualRate: 0, asOf: "2026-11-04" })).toBe(12);
     expect(policyEntitled({ mode: "NONE", quotaDays: 0, quotaPeriod: "YEARLY", accrualRate: 0, asOf: "2026-11-04" })).toBe(Number.POSITIVE_INFINITY);
+    expect(cappedLeaveAllowance({ balanceMode: "NONE", quotaDays: 2, maxCalendarDays: 0 })).toEqual({ entitled: 2, calendar: false });
+    expect(cappedLeaveAllowance({ balanceMode: "NONE", quotaDays: 0, maxCalendarDays: 92 })).toEqual({ entitled: 92, calendar: true });
+    expect(cappedLeaveAllowance({ balanceMode: "NONE", quotaDays: 0, maxCalendarDays: 0 })).toBeNull();
+    expect(cappedLeaveAllowance({ balanceMode: "UPFRONT", quotaDays: 12, maxCalendarDays: 0 })).toBeNull();
+    expect(cappedLeaveRemaining(92, 40)).toBe(52);
+    expect(cappedLeaveRemaining(2, 0)).toBe(2);
+    expect(cappedLeaveRemaining(2, 3)).toBe(0);
     expect(shiftCrossesMidnight("22:00", "06:00")).toBe(true);
     expect(shiftCrossesMidnight("08:00", "17:00")).toBe(false);
     expect(shiftLengthLabel("08:00", "17:00")).toBe("9 hours");

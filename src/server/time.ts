@@ -10,6 +10,8 @@ import {
   compensationIdr,
   clockOutIsEarly,
   calendarDays,
+  cappedLeaveAllowance,
+  cappedLeaveRemaining,
   countLeaveDays,
   distanceMeters,
   outsideWorkplace,
@@ -248,6 +250,10 @@ export async function submitLeave(ctx: Ctx, input: { leaveTypeId: string; startD
   if (type.balanceMode === "NONE" && type.quotaDays > 0 && days > type.quotaDays) {
     throw new Error(`This leave allows at most ${type.quotaDays} working days in one request.`);
   }
+  const eventCap = cappedLeaveAllowance(type);
+  if (eventCap && days > await eventRemaining(employee.id, type.id, eventCap.entitled)) {
+    throw new Error("The available balance is not enough for this request.");
+  }
   const existing = await prisma.leaveRequest.findMany({
     where: { employeeId: employee.id, status: { in: ["PENDING", "APPROVED", "CANCEL_PENDING"] } },
   });
@@ -401,6 +407,13 @@ export async function decideLeave(ctx: Ctx, requestId: string, decision: "APPROV
       });
       if (request.days > remaining) throw new Error("The balance is no longer enough to approve this request.");
       await prisma.leaveBalance.update({ where: { id: balance.id }, data: { used: balance.used + request.days } });
+    } else {
+      const eventCap = cappedLeaveAllowance(request.leaveType);
+      if (eventCap) {
+        const balance = await ensureEventBalance(request.employeeId, request.leaveTypeId, eventCap.entitled);
+        if (request.days > cappedLeaveRemaining(eventCap.entitled, balance.used)) throw new Error("The balance is no longer enough to approve this request.");
+        await prisma.leaveBalance.update({ where: { id: balance.id }, data: { entitled: eventCap.entitled, used: balance.used + request.days } });
+      }
     }
     await prisma.$transaction([
       prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "APPROVED", decisionNote: note, approverId: ctx.userId } }),
@@ -456,7 +469,8 @@ export async function cancelLeave(ctx: Ctx, requestId: string) {
   const hrs = await usersWithPermission(employee.companyId, "leave.manage");
   if (mode === "HR" && hrs.length === 0) throw new Error("No HR user is available to review this cancellation.");
   if (mode === "DIRECT") {
-    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, request.days);
+    const eventCap = cappedLeaveAllowance(request.leaveType);
+    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, request.days, eventCap ? { entitled: eventCap.entitled, used: await approvedLeaveDays(request.employeeId, request.leaveTypeId) } : undefined);
     await clearLeaveAttendance(request.employeeId, request.startDate, request.endDate);
     await prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "CANCELLED", decisionNote: "Cancelled by employee before the start date." } });
     if (request.approverId) await notify(request.approverId, "Leave cancelled", `${employee.fullName} cancelled leave before it started.`, "/leave/history");
@@ -483,11 +497,29 @@ export async function cancelLeave(ctx: Ctx, requestId: string) {
   return "The cancellation was sent to HR.";
 }
 
-async function restoreLeave(employeeId: string, leaveTypeId: string, mode: string, startDate: string, days: number) {
-  if (mode === "NONE") return;
-  const balance = await prisma.leaveBalance.findUnique({
-    where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: yearOf(startDate) } },
-  });
+async function eventRemaining(employeeId: string, leaveTypeId: string, entitled: number) {
+  const balance = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: 0 } } });
+  const used = balance ? balance.used : await approvedLeaveDays(employeeId, leaveTypeId);
+  return cappedLeaveRemaining(entitled, used);
+}
+
+async function approvedLeaveDays(employeeId: string, leaveTypeId: string) {
+  const rows = await prisma.leaveRequest.findMany({ where: { employeeId, leaveTypeId, status: "APPROVED" }, select: { days: true } });
+  return rows.reduce((sum, row) => sum + row.days, 0);
+}
+
+async function ensureEventBalance(employeeId: string, leaveTypeId: string, entitled: number) {
+  const existing = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: 0 } } });
+  if (existing) return existing;
+  return prisma.leaveBalance.create({ data: { employeeId, leaveTypeId, year: 0, entitled, used: await approvedLeaveDays(employeeId, leaveTypeId) } });
+}
+
+async function restoreLeave(employeeId: string, leaveTypeId: string, mode: string, startDate: string, days: number, createFrom?: { entitled: number; used: number }) {
+  const year = mode === "NONE" ? 0 : yearOf(startDate);
+  let balance = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year } } });
+  if (!balance && createFrom) {
+    balance = await prisma.leaveBalance.create({ data: { employeeId, leaveTypeId, year, entitled: createFrom.entitled, used: createFrom.used } });
+  }
   if (!balance) return;
   await prisma.leaveBalance.update({ where: { id: balance.id }, data: { used: Math.max(0, balance.used - days) } });
 }
@@ -504,7 +536,9 @@ export async function decideLeaveCancel(ctx: Ctx, requestId: string, decision: "
   if (!request) throw new Error("The cancellation request was not found.");
   if (decision === "APPROVED") {
     if (restoreDays < 0 || restoreDays > request.days) throw new Error("Days to restore must be between zero and the original request.");
-    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, restoreDays);
+    const eventCap = cappedLeaveAllowance(request.leaveType);
+    const approved = eventCap ? await approvedLeaveDays(request.employeeId, request.leaveTypeId) : 0;
+    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, restoreDays, eventCap ? { entitled: eventCap.entitled, used: approved + request.days } : undefined);
     await clearLeaveAttendance(request.employeeId, request.startDate, request.endDate);
     await prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "CANCELLED", decisionNote: note || `HR restored ${restoreDays} day(s).` } });
   } else {

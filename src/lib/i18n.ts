@@ -358,6 +358,8 @@ const id: Record<string, string> = {
   "Request ID": "ID pengajuan",
   "This request cannot be revised.": "Pengajuan ini tidak bisa direvisi.",
   "No fixed quota": "Tanpa kuota tetap",
+  "According to company policy": "Sesuai kebijakan perusahaan",
+  "Per event": "Per kejadian",
   Balance: "Saldo",
   left: "tersisa",
   Cancel: "Batal",
