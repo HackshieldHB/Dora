@@ -557,6 +557,71 @@ export function compensationIdr(validMinutes: number, basicSalary: number, hourl
   return Math.round((validMinutes / 60) * (basicSalary / hourlyDivisor) * multiplier);
 }
 
+export function compensationAmount(input: { validMinutes: number; basicSalary: number; hourlyDivisor: number; multiplier: number; payMethod?: string; fixedHourlyRate?: number }): number {
+  const hourly = input.fixedHourlyRate ?? 0;
+  if (hourly > 0) {
+    if (input.validMinutes <= 0) return 0;
+    return Math.round((input.validMinutes / 60) * hourly);
+  }
+  return compensationIdr(input.validMinutes, input.basicSalary, input.hourlyDivisor, input.multiplier);
+}
+
+export function fullPayrollColumn(line: { name: string; kind: string }): string {
+  if (line.kind === "INFO") return "";
+  if (line.kind === "INCENTIVE") return "A21";
+  const name = line.name.toLowerCase();
+  if (line.kind === "EARNING") {
+    if (name.includes("basic salary") || name.includes("gaji pokok")) return "A01";
+    if (name.includes("transport") || name.includes("makan")) return "A03";
+    if (name.includes("motor")) return "A06";
+    if (name.includes("marketing")) return "A08";
+    if (name.includes("jabatan")) return "A21";
+    if (name.includes("pajak") || name.includes("tax allowance")) return "B03";
+    if (name.includes("overtime") || name.includes("lembur")) return "L01";
+    return "TUL";
+  }
+  if (name.includes("unpaid") || name.includes("alpha")) return "D01";
+  if (name.includes("late") || name.includes("keterlambatan")) return "D02";
+  if (name.includes("jht") && !name.includes("employer") && !name.includes("pemberi")) return "D03";
+  if (name.includes("jp") && !name.includes("employer") && !name.includes("pemberi")) return "D05";
+  if (name.includes("kesehatan") && !name.includes("employer") && !name.includes("pemberi")) return "D07";
+  if (name.includes("pph")) return "D09";
+  if (name.includes("ganti rugi")) return "PG";
+  if (name.includes("loan") || name.includes("pinjaman")) return "PP";
+  return "PTL1";
+}
+
+export function lateDeductionAmount(lateMinutes: number, amountPerInterval: number, intervalMinutes = 1, capEnabled = false, dailyMax = 0): number {
+  if (lateMinutes <= 0 || amountPerInterval <= 0) return 0;
+  const interval = Math.max(1, intervalMinutes);
+  const raw = Math.floor(lateMinutes / interval) * amountPerInterval;
+  if (!capEnabled || dailyMax <= 0) return raw;
+  return Math.min(raw, dailyMax);
+}
+
+export function calendarDaysBetween(start: string, end: string): number {
+  const from = Date.parse(`${start}T00:00:00Z`);
+  const to = Date.parse(`${end}T00:00:00Z`);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return Number.NaN;
+  return Math.round((to - from) / 86_400_000);
+}
+
+export function overtimeWithinSubmitWindow(workDate: string, today: string, enabled: boolean, maxDays: number): boolean {
+  if (!enabled) return true;
+  const days = calendarDaysBetween(workDate, today);
+  if (!Number.isFinite(days) || days < 0) return true;
+  return days <= Math.max(0, maxDays);
+}
+
+export function locationCheck(input: { lat: number; lng: number; accuracy: number | null; distanceMeters: number | null; radiusMeters: number }): "CLEAR" | "SUSPECTED" | "UNVERIFIED" {
+  if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) return "UNVERIFIED";
+  if (input.accuracy == null || !Number.isFinite(input.accuracy)) return "UNVERIFIED";
+  if (input.accuracy <= 0) return "SUSPECTED";
+  if (input.accuracy > 100) return "UNVERIFIED";
+  if (input.radiusMeters > 0 && input.distanceMeters != null && input.distanceMeters > input.radiusMeters) return "SUSPECTED";
+  return "CLEAR";
+}
+
 export function employmentFactor(input: {
   prorate: boolean;
   periodStart: string;
@@ -599,7 +664,7 @@ export type RuleDefinition = {
   progressiveAnnual: { upTo: number | null; rate: number }[];
 };
 
-export type PayLine = { name: string; kind: "EARNING" | "DEDUCTION" | "INFO"; amount: number };
+export type PayLine = { name: string; kind: "EARNING" | "DEDUCTION" | "INFO" | "INCENTIVE"; amount: number };
 
 export type PayResult = {
   lines: PayLine[];
@@ -641,7 +706,11 @@ export function calculatePay(input: {
   workdaysInPeriod: number;
   lateMinutes: number;
   lateDeductionPerMinute: number;
-  adjustments: { name: string; kind: "EARNING" | "DEDUCTION"; amount: number }[];
+  lateDaysMinutes?: number[];
+  lateIntervalMinutes?: number;
+  lateCapEnabled?: boolean;
+  lateDailyMax?: number;
+  adjustments: { name: string; kind: "EARNING" | "DEDUCTION" | "INCENTIVE"; amount: number }[];
   thrAmount: number;
   bonusAmount: number;
   ptkp: string;
@@ -664,15 +733,15 @@ export function calculatePay(input: {
       if (input.workdaysInPeriod <= 0 || basic <= 0) warnings.push("Unpaid leave was not priced because the working-day or salary base is zero.");
       else lines.push({ name: "Unpaid leave", kind: "DEDUCTION", amount: money((basic / input.workdaysInPeriod) * input.unpaidLeaveDays) });
     }
-    if (input.lateMinutes > 0 && input.lateDeductionPerMinute > 0) {
-      lines.push({ name: "Late deduction", kind: "DEDUCTION", amount: input.lateMinutes * input.lateDeductionPerMinute });
-    }
+    const lateDays = input.lateDaysMinutes ?? (input.lateMinutes > 0 ? [input.lateMinutes] : []);
+    const lateAmount = lateDays.reduce((sum, minutes) => sum + lateDeductionAmount(minutes, input.lateDeductionPerMinute, input.lateIntervalMinutes ?? 1, input.lateCapEnabled ?? false, input.lateDailyMax ?? 0), 0);
+    if (lateAmount > 0) lines.push({ name: "Late deduction", kind: "DEDUCTION", amount: lateAmount });
   }
   if (input.kind === "THR" && input.thrAmount > 0) lines.push({ name: "THR", kind: "EARNING", amount: input.thrAmount });
   if (input.kind === "BONUS" && input.bonusAmount > 0) lines.push({ name: "Bonus", kind: "EARNING", amount: input.bonusAmount });
   for (const adjustment of input.adjustments) lines.push({ name: adjustment.name, kind: adjustment.kind, amount: adjustment.amount });
 
-  const earnings = lines.filter((line) => line.kind === "EARNING").reduce((sum, line) => sum + line.amount, 0);
+  const earnings = lines.filter((line) => line.kind === "EARNING" || line.kind === "INCENTIVE").reduce((sum, line) => sum + line.amount, 0);
   let wageBase = 0;
   if (input.kind === "REGULAR") {
     wageBase = basic + input.components.filter((row) => row.kind === "EARNING" && row.calc === "FIXED").reduce((sum, row) => sum + row.amount, 0);
@@ -709,7 +778,10 @@ export function calculatePay(input: {
     bpjsEmployer += jhtEmployer + jpEmployer + jkm + jkk;
     lines.push({ name: "JHT (employee)", kind: "DEDUCTION", amount: jhtEmployee });
     lines.push({ name: "JP (employee)", kind: "DEDUCTION", amount: jpEmployee });
-    lines.push({ name: "BPJS Ketenagakerjaan (employer)", kind: "INFO", amount: jhtEmployer + jpEmployer + jkm + jkk });
+    lines.push({ name: "JHT (employer)", kind: "INFO", amount: jhtEmployer });
+    lines.push({ name: "JP (employer)", kind: "INFO", amount: jpEmployer });
+    lines.push({ name: "JKM (employer)", kind: "INFO", amount: jkm });
+    lines.push({ name: "JKK (employer)", kind: "INFO", amount: jkk });
   }
 
   let pph21 = 0;
@@ -720,6 +792,7 @@ export function calculatePay(input: {
       const annualTaxable = Math.max(0, (earnings - bpjsEmployee) * 12 - ptkp);
       pph21 = money(progressiveAnnualTax(annualTaxable, input.rule.progressiveAnnual) / 12);
       lines.push({ name: "PPh 21", kind: "DEDUCTION", amount: pph21 });
+      warnings.push("PPh 21 uses the stored annual progressive brackets divided by 12. This is not the monthly TER method, so it is not an official filing figure.");
     }
   }
 

@@ -26,7 +26,7 @@ export async function buildPayslipPdf(item: {
   draw(`${item.period.name} · Pay date ${item.period.payDate}`, 12);
   draw(item.employee.fullName, 14, bold);
   y -= 6;
-  const earnings = lines.filter((line) => line.kind === "EARNING");
+  const earnings = lines.filter((line) => line.kind === "EARNING" || line.kind === "INCENTIVE");
   const deductions = lines.filter((line) => line.kind === "DEDUCTION");
   const employer = lines.filter((line) => line.kind === "INFO");
   const gross = earnings.reduce((sum, line) => sum + line.amount, 0);

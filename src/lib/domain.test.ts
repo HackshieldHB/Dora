@@ -5,7 +5,12 @@ import {
   calendarDays,
   calculatePay,
   canApprovePayroll,
+  compensationAmount,
+  fullPayrollColumn,
   compensationIdr,
+  lateDeductionAmount,
+  locationCheck,
+  overtimeWithinSubmitWindow,
   countLeaveDays,
   employmentFactor,
   lateMinutes,
@@ -175,6 +180,22 @@ describe("leave and attendance", () => {
     expect(validOvertimeMinutes({ ...base, clockIn: "08:00", clockOut: "" }).status).toBe("NEEDS_CHECK");
     expect(validOvertimeMinutes({ ...base, clockIn: "08:00", clockOut: "17:30" }).status).toBe("NEEDS_CHECK");
     expect(compensationIdr(120, 10_000_000, 173, 1.5)).toBe(Math.round(2 * (10_000_000 / 173) * 1.5));
+    expect(compensationAmount({ validMinutes: 120, basicSalary: 1, hourlyDivisor: 1, multiplier: 1, fixedHourlyRate: 30_000 })).toBe(60_000);
+    expect(compensationAmount({ validMinutes: 120, basicSalary: 10_000_000, hourlyDivisor: 173, multiplier: 1.5, payMethod: "FORMULA", fixedHourlyRate: 0 })).toBe(compensationIdr(120, 10_000_000, 173, 1.5));
+  });
+
+  it("caps a full late interval per day and limits overtime submission by calendar days", () => {
+    expect(lateDeductionAmount(30, 10_000, 60, true, 30_000)).toBe(0);
+    expect(lateDeductionAmount(60, 10_000, 60, true, 30_000)).toBe(10_000);
+    expect(lateDeductionAmount(240, 10_000, 60, true, 30_000)).toBe(30_000);
+    expect(lateDeductionAmount(240, 10_000, 60, false, 30_000)).toBe(40_000);
+    expect(lateDeductionAmount(90, 1_000, 1, false, 0)).toBe(90_000);
+    expect(overtimeWithinSubmitWindow("2026-11-10", "2026-11-13", true, 3)).toBe(true);
+    expect(overtimeWithinSubmitWindow("2026-11-10", "2026-11-14", true, 3)).toBe(false);
+    expect(overtimeWithinSubmitWindow("2026-11-10", "2026-11-14", false, 3)).toBe(true);
+    expect(locationCheck({ lat: 1, lng: 1, accuracy: 12, distanceMeters: 10, radiusMeters: 50 })).toBe("CLEAR");
+    expect(locationCheck({ lat: 1, lng: 1, accuracy: 0, distanceMeters: 10, radiusMeters: 50 })).toBe("SUSPECTED");
+    expect(locationCheck({ lat: 1, lng: 1, accuracy: null, distanceMeters: null, radiusMeters: 0 })).toBe("UNVERIFIED");
   });
 });
 
@@ -205,6 +226,34 @@ describe("payroll calculation", () => {
     expect(result.gross).toBe(10_000_000);
     expect(result.deduction).toBe(665_000);
     expect(result.net).toBe(9_335_000);
+    const withIncentive = calculatePay({
+      ...{
+        kind: "REGULAR" as const,
+        basicSalary: 10_000_000,
+        factor: 1,
+        components: [],
+        overtimeIdr: 0,
+        unpaidLeaveDays: 0,
+        workdaysInPeriod: 22,
+        lateMinutes: 0,
+        lateDeductionPerMinute: 0,
+        adjustments: [{ name: "Insentif", kind: "INCENTIVE" as const, amount: 200_000 }],
+        thrAmount: 0,
+        bonusAmount: 0,
+        ptkp: "TK/0",
+        rule: SAMPLE_RULE,
+        jkkClass: 1,
+        bpjsKesEnabled: true,
+        includeOvertime: false,
+      },
+    });
+    expect(withIncentive.lines.filter((line) => line.kind === "INCENTIVE")).toEqual([{ name: "Insentif", kind: "INCENTIVE", amount: 200_000 }]);
+    expect(withIncentive.gross).toBe(10_200_000);
+    expect(withIncentive.bpjsEmployee).toBe(result.bpjsEmployee);
+    expect(withIncentive.net).toBe(withIncentive.gross - withIncentive.deduction);
+    expect(fullPayrollColumn({ name: "Insentif Client", kind: "INCENTIVE" })).toBe("A21");
+    expect(fullPayrollColumn({ name: "Tunjangan Jabatan", kind: "EARNING" })).toBe("A21");
+    expect(fullPayrollColumn({ name: "Insentif", kind: "EARNING" })).toBe("TUL");
   });
 
   it("prorates only when the company setting is on, and excludes people outside the period", () => {

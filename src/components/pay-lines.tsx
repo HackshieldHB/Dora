@@ -127,7 +127,7 @@ export function PayLines({ periodId, canEdit, items, adjustments }: { periodId: 
                               {rows.map((row) => (
                                 <tr key={row.id}>
                                   <td>{row.name}</td>
-                                  <td><Tx text={row.kind === "DEDUCTION" ? "Deduction" : "Earning"} /></td>
+                                  <td><Tx text={row.kind === "DEDUCTION" ? "Deduction" : row.kind === "INCENTIVE" ? "Incentive" : "Earning"} /></td>
                                   <td className="num">{formatIdr(row.beforeAmount)}</td>
                                   <td className="num">{signed(row.amount)}</td>
                                   <td className="num">{formatIdr(row.beforeAmount + row.amount)}</td>
@@ -154,7 +154,7 @@ export function PayLines({ periodId, canEdit, items, adjustments }: { periodId: 
             <TInput type="hidden" name="periodId" value={periodId} />
             <TInput type="hidden" name="employeeId" value={editing.employeeId} />
             <label className="field"><Tx text="Name" /><TInput name="name" placeholder="Adjustment name" required /></label>
-            <label className="field"><Tx text="Kind" /><select name="kind"><option value="EARNING"><Tx text="Earning" /></option><option value="DEDUCTION"><Tx text="Deduction" /></option></select></label>
+            <label className="field"><Tx text="Kind" /><select name="kind"><option value="EARNING"><Tx text="Earning" /></option><option value="DEDUCTION"><Tx text="Deduction" /></option><option value="INCENTIVE"><Tx text="Incentive" /></option></select></label>
             <label className="field"><Tx text="Amount" /><TInput name="amount" type="number" required /></label>
             <label className="field"><Tx text="Reason" /><TInput name="reason" placeholder="Reason" required /></label>
             <button className="btn" type="submit"><Tx text="Save changes" /></button>

@@ -345,6 +345,9 @@ model AttendancePolicy {
   company                Company @relation(fields: [companyId], references: [id])
   graceMinutes           Int     @default(0)
   lateDeductionPerMinute Int     @default(0)
+  lateIntervalMinutes    Int     @default(1)
+  lateCapEnabled         Boolean @default(false)
+  lateDailyMax           Int     @default(0)
 }
 
 model AttendanceRecord {
@@ -361,9 +364,13 @@ model AttendanceRecord {
   inLat        Float?
   inLng        Float?
   inPhotoId    String   @default("")
+  inAccuracy   Float?
+  inLocationCheck String @default("")
   outLat       Float?
   outLng       Float?
   outPhotoId   String   @default("")
+  outAccuracy  Float?
+  outLocationCheck String @default("")
   status       String   @default("PRESENT")
   lateMinutes  Int      @default(0)
   source       String   @default("CLOCK")
@@ -473,6 +480,10 @@ model OvertimePolicy {
   maxHoursPerDay  Float   @default(0)
   roundingMinutes Int     @default(1)
   mealAllowance   Int     @default(0)
+  payMethod       String  @default("FORMULA")
+  fixedHourlyRate Int     @default(0)
+  submitLimitEnabled Boolean @default(false)
+  submitLimitDays Int     @default(0)
 }
 
 model OvertimeRequest {

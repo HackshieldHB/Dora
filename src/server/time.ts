@@ -7,7 +7,9 @@ import { assertDecision } from "@/lib/decision";
 import {
   addDays,
   attendanceCorrectionAllowed,
-  compensationIdr,
+  compensationAmount,
+  locationCheck,
+  overtimeWithinSubmitWindow,
   clockOutIsEarly,
   calendarDays,
   cappedLeaveAllowance,
@@ -58,7 +60,13 @@ async function assertAtWorkplace(locationId: string, lat: number, lng: number, d
   throw new Error(`You are ${Math.round(away)} m from ${place.name}. The office radius is ${place.radiusMeters} m, so ${saved}. Use Where you worked for a client site or outside the office.`);
 }
 
-export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: number; lng: number; photo: File }) {
+async function recordLocationCheck(locationId: string, lat: number, lng: number, accuracy: number | null) {
+  const place = locationId ? await prisma.workLocation.findUnique({ where: { id: locationId } }) : null;
+  const distance = place?.lat != null && place.lng != null ? distanceMeters(lat, lng, place.lat, place.lng) : null;
+  return locationCheck({ lat, lng, accuracy, distanceMeters: distance, radiusMeters: place?.radiusMeters ?? 0 });
+}
+
+export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: number; lng: number; accuracy: number | null; photo: File }) {
   if (!hasPerm(ctx, "attendance.self")) throw new Error("You do not have permission to clock attendance.");
   if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng) || input.photo.size === 0) {
     throw new Error("GPS and a photo are required. The attendance record was not saved.");
@@ -88,6 +96,7 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
     const shift = swapped || schedule?.shift;
     if (!shift) throw new Error("There is no working shift for today.");
     await assertAtWorkplace(employee.locationId || "", input.lat, input.lng, "in");
+    const inCheck = await recordLocationCheck(employee.locationId || "", input.lat, input.lng, input.accuracy);
     const photoId = await saveEmployeeFile({ companyId, employeeId: employee.id, file: input.photo });
     const late = lateMinutes(time, shift.startTime, policy?.graceMinutes ?? 0);
     await prisma.attendanceRecord.upsert({
@@ -103,6 +112,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
         inLat: input.lat,
         inLng: input.lng,
         inPhotoId: photoId,
+        inAccuracy: input.accuracy,
+        inLocationCheck: inCheck,
         status: late > 0 ? "LATE" : "PRESENT",
         lateMinutes: late,
         source: "CLOCK",
@@ -115,6 +126,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
         inLat: input.lat,
         inLng: input.lng,
         inPhotoId: photoId,
+        inAccuracy: input.accuracy,
+        inLocationCheck: inCheck,
         status: late > 0 ? "LATE" : "PRESENT",
         lateMinutes: late,
         source: "CLOCK",
@@ -126,6 +139,7 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
   }
   if (!open) throw new Error("There is no open clock-in to close.");
   await assertAtWorkplace(employee.locationId || "", input.lat, input.lng, "out");
+  const outCheck = await recordLocationCheck(employee.locationId || "", input.lat, input.lng, input.accuracy);
   const photoId = await saveEmployeeFile({ companyId, employeeId: employee.id, file: input.photo });
   const leave = await prisma.leaveRequest.findFirst({
     where: { employeeId: employee.id, status: "APPROVED", halfDay: true, startDate: open.workDate },
@@ -147,6 +161,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
       outLat: input.lat,
       outLng: input.lng,
       outPhotoId: photoId,
+      outAccuracy: input.accuracy,
+      outLocationCheck: outCheck,
       status: early && open.status === "PRESENT" ? "EARLY" : open.status,
     },
   });
@@ -207,7 +223,7 @@ export async function refreshOvertimeForDate(employeeId: string, workDate: strin
       where: { id: request.id },
       data: {
         validMinutes: result.minutes,
-        compensationIdr: compensationIdr(result.minutes, employee.basicSalary, policy?.hourlyDivisor ?? 173, policy?.multiplier ?? 1.5),
+        compensationIdr: compensationAmount({ validMinutes: result.minutes, basicSalary: employee.basicSalary, hourlyDivisor: policy?.hourlyDivisor ?? 173, multiplier: policy?.multiplier ?? 1.5, payMethod: policy?.payMethod, fixedHourlyRate: policy?.fixedHourlyRate }),
         compensationStatus: result.status,
         reviewNote: result.reason,
         reviewedBy: "",
@@ -563,6 +579,9 @@ export async function submitOvertime(ctx: Ctx, input: { workDate: string; startT
   const employee = await ownEmployee(ctx);
   const policy = await prisma.overtimePolicy.findUnique({ where: { companyId: employee.companyId } });
   if (!policy?.allowBefore && !policy?.allowAfter) throw new Error("Overtime is not enabled by company policy.");
+  if (policy && !overtimeWithinSubmitWindow(input.workDate, todayJakarta(), policy.submitLimitEnabled, policy.submitLimitDays)) {
+    throw new Error(`Overtime can no longer be submitted because it is past the maximum of ${policy.submitLimitDays} days after the overtime date. Contact HR for more information.`);
+  }
   const schedulesForDate = await prisma.employeeSchedule.findMany({ where: { employeeId: employee.id, dayOfWeek: weekday(input.workDate) }, include: { shift: true } });
   const schedule = schedulesForDate.find((row) => row.shift && scheduleActive(row, input.workDate));
   if (!schedule?.shift) throw new Error("There is no shift on that date.");
