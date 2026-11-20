@@ -4,4 +4,15 @@ storage
 prisma/*.db
 prisma/*.db-journal
 .env
+.env.*
+!.env.example
 *.tsbuildinfo
+# Secrets and per-client artifacts: never commit
+*.pem
+licenses
+license
+backups
+dist
+tools
+.claude
+*.docx

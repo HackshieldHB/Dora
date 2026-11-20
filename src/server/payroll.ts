@@ -98,9 +98,9 @@ export async function processPayroll(ctx: Ctx, periodId: string) {
     const activeDays = workdays.length ? workdays : [1, 2, 3, 4, 5];
     const workdaysInPeriod = workdayCount(period.startDate, period.endDate, activeDays, holidays);
     const unpaid = await unpaidLeaveDays(employee.id, period.startDate, period.endDate, activeDays, holidays);
-    const late = await prisma.attendanceRecord.aggregate({
-      where: { employeeId: employee.id, workDate: { gte: period.startDate, lte: period.endDate }, source: { in: ["CLOCK", "CORRECTION"] } },
-      _sum: { lateMinutes: true },
+    const lateRows = await prisma.attendanceRecord.findMany({
+      where: { employeeId: employee.id, workDate: { gte: period.startDate, lte: period.endDate }, source: { in: ["CLOCK", "CORRECTION"] }, lateMinutes: { gt: 0 } },
+      select: { lateMinutes: true },
     });
     const overtime = await prisma.overtimeRequest.aggregate({
       where: {
@@ -129,9 +129,13 @@ export async function processPayroll(ctx: Ctx, periodId: string) {
       overtimeIdr: overtime._sum.compensationIdr ?? 0,
       unpaidLeaveDays: unpaid,
       workdaysInPeriod,
-      lateMinutes: late._sum.lateMinutes ?? 0,
+      lateMinutes: 0,
+      lateDaysMinutes: lateRows.map((row) => row.lateMinutes),
       lateDeductionPerMinute: policy?.lateDeductionPerMinute ?? 0,
-      adjustments: adjustments.map((row) => ({ name: row.name, kind: row.kind as "EARNING" | "DEDUCTION", amount: row.amount })),
+      lateIntervalMinutes: policy?.lateIntervalMinutes ?? 1,
+      lateCapEnabled: policy?.lateCapEnabled ?? false,
+      lateDailyMax: policy?.lateDailyMax ?? 0,
+      adjustments: adjustments.map((row) => ({ name: row.name, kind: row.kind as "EARNING" | "DEDUCTION" | "INCENTIVE", amount: row.amount })),
       thrAmount,
       bonusAmount,
       ptkp: employee.ptkp,
@@ -331,7 +335,7 @@ function mailSummary(counts: { sent: number; logged: number; failed: number; ski
   return `Sent ${counts.sent}. Saved in the email log ${counts.logged}. Failed ${counts.failed}. Skipped ${counts.skipped} with no email address.`;
 }
 
-export async function recordAdjustment(ctx: Ctx, input: { periodId: string; employeeId: string; name: string; kind: "EARNING" | "DEDUCTION"; amount: number; reason: string }) {
+export async function recordAdjustment(ctx: Ctx, input: { periodId: string; employeeId: string; name: string; kind: "EARNING" | "DEDUCTION" | "INCENTIVE"; amount: number; reason: string }) {
   const companyId = requireCompany(ctx);
   const period = await prisma.payrollPeriod.findFirst({ where: { id: input.periodId, companyId } });
   if (!period) throw new Error("Payroll period not found.");
@@ -368,7 +372,7 @@ export async function recordAdjustment(ctx: Ctx, input: { periodId: string; empl
   await audit(ctx, "payroll.adjust", "PayrollPeriod", period.id, `${employee.fullName} ${input.kind} ${input.amount} before net ${current?.net ?? 0}. ${input.reason}`);
 }
 
-export async function addAdjustment(ctx: Ctx, input: { periodId: string; employeeId: string; name: string; kind: "EARNING" | "DEDUCTION"; amount: number; reason: string }) {
+export async function addAdjustment(ctx: Ctx, input: { periodId: string; employeeId: string; name: string; kind: "EARNING" | "DEDUCTION" | "INCENTIVE"; amount: number; reason: string }) {
   if (!hasPerm(ctx, "payroll.prepare")) throw new Error("Prepare Payroll permission is required to add an adjustment.");
   await recordAdjustment(ctx, input);
 }
@@ -414,9 +418,9 @@ export async function simulationBaseline(ctx: Ctx, employeeId: string, periodId:
   const activeDays = storedDays.length ? storedDays : [1, 2, 3, 4, 5];
   const workdaysInPeriod = workdayCount(period.startDate, period.endDate, activeDays, holidays);
   const unpaid = await unpaidLeaveDays(employee.id, period.startDate, period.endDate, activeDays, holidays);
-  const late = await prisma.attendanceRecord.aggregate({
-    where: { employeeId: employee.id, workDate: { gte: period.startDate, lte: period.endDate }, source: { in: ["CLOCK", "CORRECTION"] } },
-    _sum: { lateMinutes: true },
+  const lateRows = await prisma.attendanceRecord.findMany({
+    where: { employeeId: employee.id, workDate: { gte: period.startDate, lte: period.endDate }, source: { in: ["CLOCK", "CORRECTION"] }, lateMinutes: { gt: 0 } },
+    select: { lateMinutes: true },
   });
   const overtime = await prisma.overtimeRequest.aggregate({
     where: { employeeId: employee.id, status: "APPROVED", compensationStatus: "REVIEWED", workDate: { gte: period.startDate, lte: period.endDate }, OR: [{ payrollPeriodId: "" }, { payrollPeriodId: period.id }] },
@@ -434,9 +438,13 @@ export async function simulationBaseline(ctx: Ctx, employeeId: string, periodId:
     overtimeIdr: overtime._sum.compensationIdr ?? 0,
     unpaidLeaveDays: unpaid,
     workdaysInPeriod,
-    lateMinutes: late._sum.lateMinutes ?? 0,
+    lateMinutes: 0,
+    lateDaysMinutes: lateRows.map((row) => row.lateMinutes),
     lateDeductionPerMinute: policy?.lateDeductionPerMinute ?? 0,
-    adjustments: adjustments.map((row) => ({ name: row.name, kind: row.kind as "EARNING" | "DEDUCTION", amount: row.amount })),
+    lateIntervalMinutes: policy?.lateIntervalMinutes ?? 1,
+    lateCapEnabled: policy?.lateCapEnabled ?? false,
+    lateDailyMax: policy?.lateDailyMax ?? 0,
+    adjustments: adjustments.map((row) => ({ name: row.name, kind: row.kind as "EARNING" | "DEDUCTION" | "INCENTIVE", amount: row.amount })),
     thrAmount: period.kind === "THR" ? (extra?.mode === "ONE_MONTH_BASIC" ? employee.basicSalary : extra?.amount ?? 0) : 0,
     bonusAmount: period.kind === "BONUS" ? extra?.amount ?? 0 : 0,
     ptkp: employee.ptkp,

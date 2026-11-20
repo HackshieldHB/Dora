@@ -7,9 +7,13 @@ import { assertDecision } from "@/lib/decision";
 import {
   addDays,
   attendanceCorrectionAllowed,
-  compensationIdr,
+  compensationAmount,
+  locationCheck,
+  overtimeWithinSubmitWindow,
   clockOutIsEarly,
   calendarDays,
+  cappedLeaveAllowance,
+  cappedLeaveRemaining,
   countLeaveDays,
   distanceMeters,
   outsideWorkplace,
@@ -56,7 +60,13 @@ async function assertAtWorkplace(locationId: string, lat: number, lng: number, d
   throw new Error(`You are ${Math.round(away)} m from ${place.name}. The office radius is ${place.radiusMeters} m, so ${saved}. Use Where you worked for a client site or outside the office.`);
 }
 
-export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: number; lng: number; photo: File }) {
+async function recordLocationCheck(locationId: string, lat: number, lng: number, accuracy: number | null) {
+  const place = locationId ? await prisma.workLocation.findUnique({ where: { id: locationId } }) : null;
+  const distance = place?.lat != null && place.lng != null ? distanceMeters(lat, lng, place.lat, place.lng) : null;
+  return locationCheck({ lat, lng, accuracy, distanceMeters: distance, radiusMeters: place?.radiusMeters ?? 0 });
+}
+
+export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: number; lng: number; accuracy: number | null; photo: File }) {
   if (!hasPerm(ctx, "attendance.self")) throw new Error("You do not have permission to clock attendance.");
   if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng) || input.photo.size === 0) {
     throw new Error("GPS and a photo are required. The attendance record was not saved.");
@@ -86,6 +96,7 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
     const shift = swapped || schedule?.shift;
     if (!shift) throw new Error("There is no working shift for today.");
     await assertAtWorkplace(employee.locationId || "", input.lat, input.lng, "in");
+    const inCheck = await recordLocationCheck(employee.locationId || "", input.lat, input.lng, input.accuracy);
     const photoId = await saveEmployeeFile({ companyId, employeeId: employee.id, file: input.photo });
     const late = lateMinutes(time, shift.startTime, policy?.graceMinutes ?? 0);
     await prisma.attendanceRecord.upsert({
@@ -101,6 +112,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
         inLat: input.lat,
         inLng: input.lng,
         inPhotoId: photoId,
+        inAccuracy: input.accuracy,
+        inLocationCheck: inCheck,
         status: late > 0 ? "LATE" : "PRESENT",
         lateMinutes: late,
         source: "CLOCK",
@@ -113,6 +126,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
         inLat: input.lat,
         inLng: input.lng,
         inPhotoId: photoId,
+        inAccuracy: input.accuracy,
+        inLocationCheck: inCheck,
         status: late > 0 ? "LATE" : "PRESENT",
         lateMinutes: late,
         source: "CLOCK",
@@ -124,6 +139,7 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
   }
   if (!open) throw new Error("There is no open clock-in to close.");
   await assertAtWorkplace(employee.locationId || "", input.lat, input.lng, "out");
+  const outCheck = await recordLocationCheck(employee.locationId || "", input.lat, input.lng, input.accuracy);
   const photoId = await saveEmployeeFile({ companyId, employeeId: employee.id, file: input.photo });
   const leave = await prisma.leaveRequest.findFirst({
     where: { employeeId: employee.id, status: "APPROVED", halfDay: true, startDate: open.workDate },
@@ -145,6 +161,8 @@ export async function clock(ctx: Ctx, direction: "in" | "out", input: { lat: num
       outLat: input.lat,
       outLng: input.lng,
       outPhotoId: photoId,
+      outAccuracy: input.accuracy,
+      outLocationCheck: outCheck,
       status: early && open.status === "PRESENT" ? "EARLY" : open.status,
     },
   });
@@ -205,7 +223,7 @@ export async function refreshOvertimeForDate(employeeId: string, workDate: strin
       where: { id: request.id },
       data: {
         validMinutes: result.minutes,
-        compensationIdr: compensationIdr(result.minutes, employee.basicSalary, policy?.hourlyDivisor ?? 173, policy?.multiplier ?? 1.5),
+        compensationIdr: compensationAmount({ validMinutes: result.minutes, basicSalary: employee.basicSalary, hourlyDivisor: policy?.hourlyDivisor ?? 173, multiplier: policy?.multiplier ?? 1.5, payMethod: policy?.payMethod, fixedHourlyRate: policy?.fixedHourlyRate }),
         compensationStatus: result.status,
         reviewNote: result.reason,
         reviewedBy: "",
@@ -247,6 +265,10 @@ export async function submitLeave(ctx: Ctx, input: { leaveTypeId: string; startD
   if (days <= 0) throw new Error("The selected dates do not contain a working day.");
   if (type.balanceMode === "NONE" && type.quotaDays > 0 && days > type.quotaDays) {
     throw new Error(`This leave allows at most ${type.quotaDays} working days in one request.`);
+  }
+  const eventCap = cappedLeaveAllowance(type);
+  if (eventCap && days > await eventRemaining(employee.id, type.id, eventCap.entitled)) {
+    throw new Error("The available balance is not enough for this request.");
   }
   const existing = await prisma.leaveRequest.findMany({
     where: { employeeId: employee.id, status: { in: ["PENDING", "APPROVED", "CANCEL_PENDING"] } },
@@ -401,6 +423,13 @@ export async function decideLeave(ctx: Ctx, requestId: string, decision: "APPROV
       });
       if (request.days > remaining) throw new Error("The balance is no longer enough to approve this request.");
       await prisma.leaveBalance.update({ where: { id: balance.id }, data: { used: balance.used + request.days } });
+    } else {
+      const eventCap = cappedLeaveAllowance(request.leaveType);
+      if (eventCap) {
+        const balance = await ensureEventBalance(request.employeeId, request.leaveTypeId, eventCap.entitled);
+        if (request.days > cappedLeaveRemaining(eventCap.entitled, balance.used)) throw new Error("The balance is no longer enough to approve this request.");
+        await prisma.leaveBalance.update({ where: { id: balance.id }, data: { entitled: eventCap.entitled, used: balance.used + request.days } });
+      }
     }
     await prisma.$transaction([
       prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "APPROVED", decisionNote: note, approverId: ctx.userId } }),
@@ -456,7 +485,8 @@ export async function cancelLeave(ctx: Ctx, requestId: string) {
   const hrs = await usersWithPermission(employee.companyId, "leave.manage");
   if (mode === "HR" && hrs.length === 0) throw new Error("No HR user is available to review this cancellation.");
   if (mode === "DIRECT") {
-    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, request.days);
+    const eventCap = cappedLeaveAllowance(request.leaveType);
+    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, request.days, eventCap ? { entitled: eventCap.entitled, used: await approvedLeaveDays(request.employeeId, request.leaveTypeId) } : undefined);
     await clearLeaveAttendance(request.employeeId, request.startDate, request.endDate);
     await prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "CANCELLED", decisionNote: "Cancelled by employee before the start date." } });
     if (request.approverId) await notify(request.approverId, "Leave cancelled", `${employee.fullName} cancelled leave before it started.`, "/leave/history");
@@ -483,11 +513,29 @@ export async function cancelLeave(ctx: Ctx, requestId: string) {
   return "The cancellation was sent to HR.";
 }
 
-async function restoreLeave(employeeId: string, leaveTypeId: string, mode: string, startDate: string, days: number) {
-  if (mode === "NONE") return;
-  const balance = await prisma.leaveBalance.findUnique({
-    where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: yearOf(startDate) } },
-  });
+async function eventRemaining(employeeId: string, leaveTypeId: string, entitled: number) {
+  const balance = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: 0 } } });
+  const used = balance ? balance.used : await approvedLeaveDays(employeeId, leaveTypeId);
+  return cappedLeaveRemaining(entitled, used);
+}
+
+async function approvedLeaveDays(employeeId: string, leaveTypeId: string) {
+  const rows = await prisma.leaveRequest.findMany({ where: { employeeId, leaveTypeId, status: "APPROVED" }, select: { days: true } });
+  return rows.reduce((sum, row) => sum + row.days, 0);
+}
+
+async function ensureEventBalance(employeeId: string, leaveTypeId: string, entitled: number) {
+  const existing = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year: 0 } } });
+  if (existing) return existing;
+  return prisma.leaveBalance.create({ data: { employeeId, leaveTypeId, year: 0, entitled, used: await approvedLeaveDays(employeeId, leaveTypeId) } });
+}
+
+async function restoreLeave(employeeId: string, leaveTypeId: string, mode: string, startDate: string, days: number, createFrom?: { entitled: number; used: number }) {
+  const year = mode === "NONE" ? 0 : yearOf(startDate);
+  let balance = await prisma.leaveBalance.findUnique({ where: { employeeId_leaveTypeId_year: { employeeId, leaveTypeId, year } } });
+  if (!balance && createFrom) {
+    balance = await prisma.leaveBalance.create({ data: { employeeId, leaveTypeId, year, entitled: createFrom.entitled, used: createFrom.used } });
+  }
   if (!balance) return;
   await prisma.leaveBalance.update({ where: { id: balance.id }, data: { used: Math.max(0, balance.used - days) } });
 }
@@ -504,7 +552,9 @@ export async function decideLeaveCancel(ctx: Ctx, requestId: string, decision: "
   if (!request) throw new Error("The cancellation request was not found.");
   if (decision === "APPROVED") {
     if (restoreDays < 0 || restoreDays > request.days) throw new Error("Days to restore must be between zero and the original request.");
-    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, restoreDays);
+    const eventCap = cappedLeaveAllowance(request.leaveType);
+    const approved = eventCap ? await approvedLeaveDays(request.employeeId, request.leaveTypeId) : 0;
+    await restoreLeave(request.employeeId, request.leaveTypeId, request.leaveType.balanceMode, request.startDate, restoreDays, eventCap ? { entitled: eventCap.entitled, used: approved + request.days } : undefined);
     await clearLeaveAttendance(request.employeeId, request.startDate, request.endDate);
     await prisma.leaveRequest.update({ where: { id: request.id }, data: { status: "CANCELLED", decisionNote: note || `HR restored ${restoreDays} day(s).` } });
   } else {
@@ -529,6 +579,9 @@ export async function submitOvertime(ctx: Ctx, input: { workDate: string; startT
   const employee = await ownEmployee(ctx);
   const policy = await prisma.overtimePolicy.findUnique({ where: { companyId: employee.companyId } });
   if (!policy?.allowBefore && !policy?.allowAfter) throw new Error("Overtime is not enabled by company policy.");
+  if (policy && !overtimeWithinSubmitWindow(input.workDate, todayJakarta(), policy.submitLimitEnabled, policy.submitLimitDays)) {
+    throw new Error(`Overtime can no longer be submitted because it is past the maximum of ${policy.submitLimitDays} days after the overtime date. Contact HR for more information.`);
+  }
   const schedulesForDate = await prisma.employeeSchedule.findMany({ where: { employeeId: employee.id, dayOfWeek: weekday(input.workDate) }, include: { shift: true } });
   const schedule = schedulesForDate.find((row) => row.shift && scheduleActive(row, input.workDate));
   if (!schedule?.shift) throw new Error("There is no shift on that date.");

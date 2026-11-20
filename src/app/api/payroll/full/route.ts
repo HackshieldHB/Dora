@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import { NextResponse } from "next/server";
 import { getCtx } from "@/lib/context";
 import { prisma } from "@/lib/db";
+import { fullPayrollColumn } from "@/lib/domain";
 
 const HEADERS = [
   "Nomor Induk Karyawan", "Nama Karyawan", "Perusahaan", "Departement", "divisi", "Pangkat", "Nama Jabatan", "Lokasi", "Pusat Biaya",
@@ -15,30 +16,6 @@ const HEADERS = [
 ];
 
 const MONTHS = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
-
-function bucket(line: { name: string; kind: string }) {
-  if (line.kind === "INFO") return "";
-  const name = line.name.toLowerCase();
-  if (line.kind === "EARNING") {
-    if (name.includes("basic salary") || name.includes("gaji pokok")) return "A01";
-    if (name.includes("transport") || name.includes("makan")) return "A03";
-    if (name.includes("motor")) return "A06";
-    if (name.includes("marketing")) return "A08";
-    if (name.includes("jabatan")) return "A21";
-    if (name.includes("pajak") || name.includes("tax allowance")) return "B03";
-    if (name.includes("overtime") || name.includes("lembur")) return "L01";
-    return "TUL";
-  }
-  if (name.includes("unpaid") || name.includes("alpha")) return "D01";
-  if (name.includes("late") || name.includes("keterlambatan")) return "D02";
-  if (name.includes("jht") && !name.includes("employer") && !name.includes("pemberi")) return "D03";
-  if (name.includes("jp") && !name.includes("employer") && !name.includes("pemberi")) return "D05";
-  if (name.includes("kesehatan") && !name.includes("employer") && !name.includes("pemberi")) return "D07";
-  if (name.includes("pph")) return "D09";
-  if (name.includes("ganti rugi")) return "PG";
-  if (name.includes("loan") || name.includes("pinjaman")) return "PP";
-  return "PTL1";
-}
 
 function dateText(value: string) {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -68,7 +45,7 @@ export async function GET(request: Request) {
     const amounts = new Map<string, number>();
     const lines = JSON.parse(item.breakdown || "[]") as { name: string; kind: string; amount: number }[];
     for (const line of lines) {
-      const code = bucket(line);
+      const code = fullPayrollColumn(line);
       if (!code) continue;
       amounts.set(code, (amounts.get(code) || 0) + line.amount);
     }

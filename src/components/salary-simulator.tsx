@@ -17,7 +17,7 @@ type Input = {
   workdaysInPeriod: number;
   lateMinutes: number;
   lateDeductionPerMinute: number;
-  adjustments: { name: string; kind: "EARNING" | "DEDUCTION"; amount: number }[];
+  adjustments: { name: string; kind: "EARNING" | "DEDUCTION" | "INCENTIVE"; amount: number }[];
   thrAmount: number;
   bonusAmount: number;
   ptkp: string;
@@ -81,7 +81,7 @@ export function SalarySimulator({ initial, baseline, assumption }: { initial: In
       <div className="record-list">{shown.lines.filter((line) => line.kind !== "INFO").map((line) => <p className="record" key={line.name}><span>{line.name}</span><strong>{formatIdr(line.amount)}</strong></p>)}</div>
       {shown.lines.some((line) => line.kind === "INFO") ? <p className="hint"><Tx text="Employer contributions are not deducted from take home pay." /></p> : null}
       <div className="record-list">{shown.lines.filter((line) => line.kind === "INFO").map((line) => <p className="record" key={line.name}><span>{line.name}</span><span>{formatIdr(line.amount)}</span></p>)}</div>
-      {shown.warnings.map((warning) => <p className="hint" key={warning}>{warning}</p>)}
+      {shown.warnings.map((warning) => <p className="hint" key={warning}><Tx text={warning} /></p>)}
     </div>
   );
 }

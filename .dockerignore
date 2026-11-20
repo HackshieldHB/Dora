@@ -1,0 +1,23 @@
+# Never send secrets, live data or local builds into the Docker build context.
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+licenses
+license
+backups
+storage
+prisma/*.db
+prisma/*.db-journal
+node_modules
+.next
+dist
+tools
+*.tsbuildinfo
+*.docx
+.git
+.claude
+.vscode
+.idea
+npm-debug.log*

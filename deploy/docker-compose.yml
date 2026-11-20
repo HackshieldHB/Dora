@@ -1,0 +1,59 @@
+# DORA on the client's server. Folder layout next to this file:
+#   .env           secrets (from .env.example), readable only by the admin
+#   Caddyfile      HTTPS reverse proxy
+#   license/       dora.lic from the vendor
+#   backups/       encrypted backups (owned by uid 1001: `sudo chown 1001:1001 backups`)
+# Load the image first: docker load -i dora-<client>-<build>.tar.gz
+
+services:
+  dora:
+    image: ${DORA_IMAGE:?Set DORA_IMAGE in .env, e.g. dora:ptmaju-01-20270101}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DORA_TRUSTED_PROXY_HOPS: "1"
+    # Only reachable from the reverse proxy on this host, never directly from the network.
+    expose:
+      - "3000"
+    volumes:
+      - dora-data:/data
+      - dora-storage:/app/storage
+      - ./license:/app/license:ro
+      - ./backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - dora
+    ports:
+      - "80:80"
+      - "443:443"
+    # Only the domain: the proxy never sees the data key or other secrets.
+    environment:
+      DORA_DOMAIN: ${DORA_DOMAIN:?Set DORA_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - internal
+
+volumes:
+  dora-data:
+  dora-storage:
+  caddy-data:
+  caddy-config:
+
+networks:
+  internal:
