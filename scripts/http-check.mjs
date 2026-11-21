@@ -1,4 +1,4 @@
-const base = "http://localhost:3010";
+const base = process.env.DORA_BASE_URL || "http://localhost:3010";
 
 function cookiesFrom(response, jar) {
   const raw = typeof response.headers.getSetCookie === "function" ? response.headers.getSetCookie() : [];

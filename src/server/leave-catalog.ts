@@ -1,7 +1,7 @@
-import type { PrismaClient } from "@prisma/client";
+import type { DbClient } from "@/lib/db";
 import { LEAVE_CATALOG } from "@/lib/leave-catalog";
 
-export async function ensureLeaveCatalog(db: PrismaClient, companyId: string) {
+export async function ensureLeaveCatalog(db: DbClient, companyId: string) {
   for (const item of LEAVE_CATALOG) {
     const existing = await db.leaveType.findFirst({ where: { companyId, name: item.name } });
     if (!existing) {

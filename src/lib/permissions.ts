@@ -235,8 +235,7 @@ export const NAV: NavItem[] = [
     children: [
       { label: "Tax & Statutory Overview", href: "/tax", permission: "tax.view" },
       { label: "PPh 21 Management", href: "/tax/pph21", permission: "tax.view" },
-      { label: "BPJS Kesehatan", href: "/tax/bpjs-health", permission: "tax.view" },
-      { label: "BPJS Ketenagakerjaan", href: "/tax/bpjs-tk", permission: "tax.view" },
+      { label: "BPJS Components", href: "/tax/bpjs", permission: "tax.view" },
       { label: "Tax & Statutory Configuration", href: "/tax/config", permission: "tax.configure" },
       { label: "Tax & Statutory Reports", href: "/tax/reports", permission: "tax.view" },
       { label: "Platform Statutory Rules", href: "/platform/rules", permission: "tax.platform" },

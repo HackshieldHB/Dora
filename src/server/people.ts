@@ -11,6 +11,7 @@ import { employeeWhere, requireCompany } from "./scope";
 import { usersWithPermission } from "./access";
 import { placementError } from "@/lib/placement";
 import { assertAssignableRole } from "./workflow";
+import { assertEmployeeCapacity } from "@/lib/license";
 
 const employeeInclude = {
   branch: true,
@@ -187,6 +188,7 @@ export async function activateEmployee(ctx: Ctx, id: string) {
   const { gaps, employee: draft } = await activationGaps(ctx, id);
   if (gaps.length) throw new Error(`Activation is blocked until these fields are complete: ${gaps.join(", ")}.`);
   if (draft.basicSalary <= 0) throw new Error("Basic salary is required before the employee can be activated.");
+  await assertEmployeeCapacity();
   const employee = await prisma.employee.update({ where: { id }, data: { status: "ACTIVE" } });
   await prisma.employmentEvent.create({
     data: {

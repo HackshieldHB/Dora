@@ -231,23 +231,27 @@ export async function saveHoliday(ctx: Ctx, date: string, name: string) {
   await audit(ctx, "holiday.save", "Holiday", date, name);
 }
 
-export async function saveAttendancePolicy(ctx: Ctx, graceMinutes: number, lateDeductionPerMinute: number) {
+export async function saveAttendancePolicy(ctx: Ctx, input: { graceMinutes: number; lateDeductionPerMinute: number; lateIntervalMinutes: number; lateCapEnabled: boolean; lateDailyMax: number }) {
   if (!hasPerm(ctx, "attendance.configure")) throw new Error("You do not have permission to edit attendance policy.");
+  if (input.lateIntervalMinutes < 1) throw new Error("The penalty interval must be at least 1 minute.");
+  if (input.lateDeductionPerMinute < 0 || input.lateDailyMax < 0) throw new Error("The penalty amount cannot be negative.");
   const companyId = requireCompany(ctx);
   await prisma.attendancePolicy.upsert({
     where: { companyId },
-    update: { graceMinutes, lateDeductionPerMinute },
-    create: { companyId, graceMinutes, lateDeductionPerMinute },
+    update: input,
+    create: { companyId, ...input },
   });
-  await audit(ctx, "attendance.policy", "AttendancePolicy", companyId, `${graceMinutes} grace`);
+  await audit(ctx, "attendance.policy", "AttendancePolicy", companyId, `${input.graceMinutes} grace`);
 }
 
-export async function saveOvertimePolicy(ctx: Ctx, input: { allowBefore: boolean; allowAfter: boolean; multiplier: number; hourlyDivisor: number; maxHoursPerDay: number; roundingMinutes: number; mealAllowance: number }) {
-  if (input.mealAllowance < 0) throw new Error("The meal allowance cannot be negative.");
+export async function saveOvertimePolicy(ctx: Ctx, input: { allowBefore: boolean; allowAfter: boolean; multiplier: number; hourlyDivisor: number; maxHoursPerDay: number; roundingMinutes: number; mealAllowance: number; payMethod: string; fixedHourlyRate: number; submitLimitEnabled: boolean; submitLimitDays: number }) {
+  if (input.mealAllowance < 0 || input.fixedHourlyRate < 0) throw new Error("The meal allowance cannot be negative.");
   if (!hasPerm(ctx, "overtime.configure")) throw new Error("You do not have permission to edit overtime policy.");
+  if (input.submitLimitEnabled && input.submitLimitDays < 0) throw new Error("The overtime submission limit cannot be negative.");
   const companyId = requireCompany(ctx);
   if (input.hourlyDivisor <= 0) throw new Error("The hourly divisor must be greater than zero.");
-  await prisma.overtimePolicy.upsert({ where: { companyId }, update: input, create: { companyId, ...input } });
+  const stored = { ...input, payMethod: input.fixedHourlyRate > 0 ? "FIXED_HOURLY" : "FORMULA" };
+  await prisma.overtimePolicy.upsert({ where: { companyId }, update: stored, create: { companyId, ...stored } });
   await audit(ctx, "overtime.policy", "OvertimePolicy", companyId, String(input.multiplier));
 }
 

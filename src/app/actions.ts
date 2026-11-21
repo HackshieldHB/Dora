@@ -174,7 +174,13 @@ export async function jointHolidayAction(formData: FormData) {
 }
 
 export async function attendancePolicyAction(formData: FormData) {
-  await act("/attendance/policy", async () => saveAttendancePolicy(await assertPerm("attendance.configure"), integer(formData.get("graceMinutes")), integer(formData.get("lateDeductionPerMinute"))));
+  await act("/attendance/policy", async () => saveAttendancePolicy(await assertPerm("attendance.configure"), {
+    graceMinutes: integer(formData.get("graceMinutes")),
+    lateDeductionPerMinute: integer(formData.get("lateDeductionPerMinute")),
+    lateIntervalMinutes: Math.max(1, integer(formData.get("lateIntervalMinutes")) || 1),
+    lateCapEnabled: checked(formData.get("lateCapEnabled")),
+    lateDailyMax: integer(formData.get("lateDailyMax")),
+  }));
 }
 
 export async function correctionAction(formData: FormData) {
@@ -186,6 +192,7 @@ export async function clockAction(formData: FormData) {
     return clock(await assertPerm("attendance.self"), text(formData.get("direction")) as "in" | "out", {
       lat: Number(formData.get("lat")),
       lng: Number(formData.get("lng")),
+      accuracy: formData.get("accuracy") === "" || formData.get("accuracy") == null ? null : Number(formData.get("accuracy")),
       photo: formData.get("photo") as File,
     });
   });
@@ -296,6 +303,10 @@ export async function overtimePolicyAction(formData: FormData) {
     maxHoursPerDay: decimal(formData.get("maxHoursPerDay")),
     roundingMinutes: integer(formData.get("roundingMinutes")) || 1,
     mealAllowance: integer(formData.get("mealAllowance")),
+    payMethod: integer(formData.get("fixedHourlyRate")) > 0 ? "FIXED_HOURLY" : "FORMULA",
+    fixedHourlyRate: integer(formData.get("fixedHourlyRate")),
+    submitLimitEnabled: checked(formData.get("submitLimitEnabled")),
+    submitLimitDays: integer(formData.get("submitLimitDays")),
   }));
 }
 
@@ -371,6 +382,11 @@ export async function languageAction(formData: FormData) {
   redirect(next);
 }
 
+function adjustmentKind(value: string): "EARNING" | "DEDUCTION" | "INCENTIVE" {
+  if (value === "DEDUCTION" || value === "INCENTIVE" || value === "EARNING") return value;
+  throw new Error("Choose earning, deduction, or incentive.");
+}
+
 export async function processingAdjustmentAction(formData: FormData) {
   const id = text(formData.get("periodId"));
   await act(`/payroll/processing?period=${id}`, async () => {
@@ -378,7 +394,7 @@ export async function processingAdjustmentAction(formData: FormData) {
       periodId: id,
       employeeId: text(formData.get("employeeId")),
       name: text(formData.get("name")),
-      kind: text(formData.get("kind")) as "EARNING" | "DEDUCTION",
+      kind: adjustmentKind(text(formData.get("kind"))),
       amount: integer(formData.get("amount")),
       reason: text(formData.get("reason")),
     });
@@ -392,7 +408,7 @@ export async function adjustmentAction(formData: FormData) {
     periodId: id,
     employeeId: text(formData.get("employeeId")),
     name: text(formData.get("name")),
-    kind: text(formData.get("kind")) as "EARNING" | "DEDUCTION",
+    kind: adjustmentKind(text(formData.get("kind"))),
     amount: integer(formData.get("amount")),
     reason: text(formData.get("reason")),
   }));

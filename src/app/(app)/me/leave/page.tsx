@@ -1,7 +1,7 @@
 import { Tx, TInput } from "@/components/locale";
 import { requirePerm } from "@/lib/context";
 import { prisma } from "@/lib/db";
-import { carryIn, leaveRemaining, policyEntitled } from "@/lib/domain";
+import { cappedLeaveAllowance, cappedLeaveRemaining, carryIn, leaveRemaining, policyEntitled } from "@/lib/domain";
 import { monthBounds, todayJakarta } from "@/lib/format";
 import { ensureLeaveCatalog } from "@/server/leave-catalog";
 import Link from "next/link";
@@ -28,6 +28,12 @@ export default async function MyLeavePage({ searchParams }: { searchParams: Prom
     orderBy: { createdAt: "desc" },
   });
   const balances = await prisma.leaveBalance.findMany({ where: { employeeId: ctx.employeeId }, include: { leaveType: true } });
+  const approvedTotals = await prisma.leaveRequest.groupBy({
+    by: ["leaveTypeId"],
+    where: { employeeId: ctx.employeeId, status: "APPROVED" },
+    _sum: { days: true },
+  });
+  const approvedByType = new Map(approvedTotals.map((row) => [row.leaveTypeId, row._sum.days ?? 0]));
   const today = todayJakarta();
   const year = Number(today.slice(0, 4));
   const month = today.slice(0, 7);
@@ -76,31 +82,50 @@ export default async function MyLeavePage({ searchParams }: { searchParams: Prom
         />
         <div className="card">
           <strong>{text("Balance")}</strong>
-          {types.map((type) => {
-            if (type.balanceMode === "NONE") return null;
-            const balance = balances.find((row) => row.leaveTypeId === type.id && row.year === year);
-            const previous = balances.find((row) => row.leaveTypeId === type.id && row.year === year - 1);
-            const entitled = policyEntitled({ mode: type.balanceMode, quotaDays: type.quotaDays, quotaPeriod: type.quotaPeriod, accrualRate: type.accrualRate, asOf: today });
+          {types.map((type, index) => {
             const rows = openLeave.filter((row) => row.leaveTypeId === type.id);
-            const used = type.quotaPeriod === "MONTHLY"
-              ? rows.filter((row) => row.startDate.startsWith(month)).reduce((sum, row) => sum + row.days, 0)
-              : balance?.used ?? 0;
-            const remaining = leaveRemaining({
-              mode: type.balanceMode,
-              entitled,
-              used,
-              carryIn: type.quotaPeriod === "MONTHLY" ? 0 : carryIn(previous ?? null, type.carryForwardDays),
-              expiryMonth: type.expiryMonth,
-              expiryDate: type.expiryDate,
-              asOf: today,
-            });
+            const color = BALANCE_COLORS[index % BALANCE_COLORS.length];
+            const eventCap = cappedLeaveAllowance(type);
+            const recorded = approvedByType.get(type.id) ?? 0;
+            if (type.balanceMode === "NONE" && !eventCap) {
+              return (
+                <div className="meter" key={type.id}>
+                  <div className="meter-top"><span>{text(type.name)}</span><strong>{text("No fixed quota")}</strong></div>
+                  <div className="meter-track"><div className="meter-fill" style={{ width: "100%", background: color }} /></div>
+                  <p className="hint">{text("According to company policy")}</p>
+                  {recorded > 0 ? <p className="hint">{ctx.locale === "id" ? `${recorded} hari tercatat pada pengajuan yang disetujui.` : `${recorded} day${recorded === 1 ? "" : "s"} recorded on approved requests.`}</p> : null}
+                </div>
+              );
+            }
+            const balance = balances.find((row) => row.leaveTypeId === type.id && row.year === (eventCap ? 0 : year));
+            const previous = balances.find((row) => row.leaveTypeId === type.id && row.year === year - 1);
+            const entitled = eventCap ? eventCap.entitled : policyEntitled({ mode: type.balanceMode, quotaDays: type.quotaDays, quotaPeriod: type.quotaPeriod, accrualRate: type.accrualRate, asOf: today });
+            const approvedRows = rows.filter((row) => row.status === "APPROVED" && (type.quotaPeriod === "MONTHLY" ? row.startDate.startsWith(month) : true));
+            const used = eventCap
+              ? balance?.used ?? recorded
+              : type.quotaPeriod === "MONTHLY"
+                ? approvedRows.reduce((sum, row) => sum + row.days, 0)
+                : balance?.used ?? 0;
+            const remaining = eventCap
+              ? cappedLeaveRemaining(entitled, used)
+              : leaveRemaining({
+                mode: type.balanceMode,
+                entitled,
+                used,
+                carryIn: type.quotaPeriod === "MONTHLY" ? 0 : carryIn(previous ?? null, type.carryForwardDays),
+                expiryMonth: type.expiryMonth,
+                expiryDate: type.expiryDate,
+                asOf: today,
+              });
             const width = entitled > 0 ? Math.max(0, Math.min(100, (remaining / entitled) * 100)) : 0;
-            const pending = type.quotaPeriod === "MONTHLY" ? 0 : rows.filter((row) => row.status === "PENDING").reduce((sum, row) => sum + row.days, 0);
+            const pending = rows.filter((row) => row.status === "PENDING" && (type.quotaPeriod === "MONTHLY" ? row.startDate.startsWith(month) : true)).reduce((sum, row) => sum + row.days, 0);
             const forecast = Math.max(0, remaining - pending);
+            const unit = eventCap?.calendar ? (ctx.locale === "id" ? "hari kalender" : "calendar days") : (ctx.locale === "id" ? "hari" : "days");
             return (
               <div className="meter" key={type.id}>
-                <div className="meter-top"><span>{text(type.name)}</span><strong>{remaining} {text("left")}</strong></div>
-                <div className="meter-track"><div className="meter-fill" style={{ width: `${width}%` }} /></div>
+                <div className="meter-top"><span>{text(type.name)}</span><strong>{ctx.locale === "id" ? `${remaining} ${unit} tersisa` : `${remaining} ${unit} left`}</strong></div>
+                <div className="meter-track"><div className="meter-fill" style={{ width: `${width}%`, background: color }} /></div>
+                <p className="hint">{ctx.locale === "id" ? `${used} dari ${entitled} ${unit} digunakan` : `${used} of ${entitled} ${unit} used`}</p>
                 {pending > 0 ? <p className="hint">{ctx.locale === "id" ? `Jika ${pending} hari yang masih menunggu disetujui, sisa ${forecast} sampai akhir ${year}.` : `If the ${pending} day${pending === 1 ? "" : "s"} still waiting are approved, ${forecast} remain until the end of ${year}.`}</p> : null}
               </div>
             );
@@ -118,6 +143,8 @@ export default async function MyLeavePage({ searchParams }: { searchParams: Prom
     </div>
   );
 }
+
+const BALANCE_COLORS = ["#0f9f8f", "#e879a8", "#7c6cf0", "#3b82f6", "#d4a017", "#c084a8", "#6478b4", "#6b8f71", "#e0a100", "#e07a7a", "#5b8fb8", "#4f6bed", "#a78bfa", "#8b93a7", "#d36b6b"];
 
 function leaveQuota(type: { balanceMode: string; quotaDays: number; quotaPeriod: string; maxCalendarDays: number }, locale: string) {
   if (type.balanceMode === "NONE") {

@@ -4,6 +4,7 @@ import { getCtx } from "@/lib/context";
 import { prisma } from "@/lib/db";
 import { todayJakarta } from "@/lib/format";
 import { employeeWhere } from "@/server/scope";
+import { contentDisposition } from "@/lib/http";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await getCtx();
@@ -44,7 +45,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   return new NextResponse(Buffer.from(bytes), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="pengalaman-kerja-${employee.employeeCode}.pdf"`,
+      "Content-Disposition": contentDisposition("attachment", `pengalaman-kerja-${employee.employeeCode}.pdf`),
     },
   });
 }
