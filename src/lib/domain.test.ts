@@ -222,10 +222,13 @@ describe("payroll calculation", () => {
     });
     expect(result.bpjsEmployee).toBe(400_000);
     expect(result.bpjsEmployer).toBe(1_024_000);
-    expect(result.pph21).toBe(265_000);
+    expect(result.pph21).toBe(200_000);
     expect(result.gross).toBe(10_000_000);
-    expect(result.deduction).toBe(665_000);
-    expect(result.net).toBe(9_335_000);
+    expect(result.deduction).toBe(600_000);
+    expect(result.net).toBe(9_400_000);
+    expect(result.warnings.some((line) => line.includes("monthly TER A"))).toBe(true);
+    expect(result.lines.some((line) => line.name === "JKM (employer)" && line.kind === "INFO")).toBe(true);
+    expect(result.lines.some((line) => line.name.startsWith("JKP"))).toBe(false);
     const withIncentive = calculatePay({
       ...{
         kind: "REGULAR" as const,

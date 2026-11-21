@@ -15,7 +15,7 @@ export function PayslipBreakdown({ lines, gross, deduction, net }: { lines: Line
       <div className="record-list">{earnings.map((line) => <p className="record" key={`e-${line.name}`}><span>{line.name}</span><strong>{formatIdr(line.amount)}</strong></p>)}</div>
       <p className="record"><span><Tx text="Total earnings" /></span><strong>{formatIdr(gross)}</strong></p>
       <p className="section-label"><Tx text="Deduction detail" /></p>
-      <div className="record-list">{deductions.map((line) => <p className="record" key={`d-${line.name}`}><span>{line.name}</span><strong>{formatIdr(line.amount)}</strong>{line.name === "PPh 21" ? <span className="hint"><Tx text="PPh 21 uses the stored annual progressive brackets divided by 12. This is not the monthly TER method, so it is not an official filing figure." /></span> : null}</p>)}</div>
+      <div className="record-list">{deductions.map((line) => <p className="record" key={`d-${line.name}`}><span>{line.name}</span><strong>{formatIdr(line.amount)}</strong>{line.name === "PPh 21" ? <span className="hint"><Tx text="This PPh 21 amount is the figure stored when the payroll was processed." /></span> : null}</p>)}</div>
       <p className="record"><span><Tx text="Total deduction" /></span><strong>{formatIdr(deduction)}</strong></p>
       <p className="payslip-net"><strong><Tx text="Take home pay" /> {formatIdr(net)}</strong></p>
       {employer.length ? (

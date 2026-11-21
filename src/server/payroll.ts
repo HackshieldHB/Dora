@@ -33,7 +33,66 @@ const employeeSelect = {
   ptkp: true,
   joinDate: true,
   lastWorkingDay: true,
+  employmentType: true,
+  bpjsHealthOn: true,
+  bpjsHealthStart: true,
+  bpjsJht: true,
+  bpjsJkk: true,
+  bpjsJkm: true,
+  bpjsJp: true,
+  bpjsTkStart: true,
 } as const;
+
+function programOn(flag: boolean, start: string, periodEnd: string) {
+  return flag && (!start || start <= periodEnd);
+}
+
+async function payrollTaxFacts(companyId: string, employee: { id: string; employmentType: string; lastWorkingDay: string; bpjsHealthOn: boolean; bpjsHealthStart: string; bpjsJht: boolean; bpjsJkk: boolean; bpjsJkm: boolean; bpjsJp: boolean; bpjsTkStart: string }, period: { id: string; startDate: string; endDate: string }, companyHealth: boolean) {
+  const year = period.startDate.slice(0, 4);
+  const month = period.startDate.slice(0, 7);
+  const prior = await prisma.payrollItem.findMany({
+    where: {
+      employeeId: employee.id,
+      period: {
+        companyId,
+        id: { not: period.id },
+        startDate: { gte: `${year}-01-01`, lt: period.startDate },
+        status: { in: ["PROCESSED", "NEEDS_REVISION", "SUBMITTED", "APPROVED", "LOCKED"] },
+      },
+    },
+    select: { gross: true, pph21: true, breakdown: true, period: { select: { startDate: true, kind: true } } },
+  });
+  const pensionOf = (breakdown: string) => {
+    try {
+      const lines = JSON.parse(breakdown) as { name: string; amount: number }[];
+      return lines.filter((line) => line.name === "JP (employee)").reduce((sum, line) => sum + line.amount, 0);
+    } catch {
+      return 0;
+    }
+  };
+  const earlier = prior.filter((item) => item.period.startDate.slice(0, 7) < month);
+  const sameMonth = prior.filter((item) => item.period.startDate.slice(0, 7) === month && item.period.kind === "REGULAR");
+  return {
+    employmentType: employee.employmentType || "PERMANENT",
+    periodStart: period.startDate,
+    periodEnd: period.endDate,
+    lastWorkingDay: employee.lastWorkingDay,
+    priorGross: earlier.reduce((sum, item) => sum + item.gross, 0),
+    priorPph: earlier.reduce((sum, item) => sum + item.pph21, 0),
+    priorMonths: new Set(earlier.map((item) => item.period.startDate.slice(0, 7))).size,
+    priorPension: earlier.reduce((sum, item) => sum + pensionOf(item.breakdown), 0),
+    sameMonthGross: sameMonth.reduce((sum, item) => sum + item.gross, 0),
+    sameMonthPph: sameMonth.reduce((sum, item) => sum + item.pph21, 0),
+    sameMonthKnown: sameMonth.length > 0,
+    enrollment: {
+      jkn: companyHealth && programOn(employee.bpjsHealthOn, employee.bpjsHealthStart, period.endDate),
+      jht: programOn(employee.bpjsJht, employee.bpjsTkStart, period.endDate),
+      jkk: programOn(employee.bpjsJkk, employee.bpjsTkStart, period.endDate),
+      jkm: programOn(employee.bpjsJkm, employee.bpjsTkStart, period.endDate),
+      jp: programOn(employee.bpjsJp, employee.bpjsTkStart, period.endDate),
+    },
+  };
+}
 
 function workdayCount(start: string, end: string, workdays: number[], holidays: Set<string>) {
   return eachDate(start, end).filter((date) => workdays.includes(weekday(date)) && !holidays.has(date)).length;
@@ -121,6 +180,7 @@ export async function processPayroll(ctx: Ctx, periodId: string) {
     const bonusAmount = period.kind === "BONUS" ? extra?.amount ?? 0 : 0;
     if ((period.kind === "THR" && thrAmount <= 0) || (period.kind === "BONUS" && bonusAmount <= 0)) continue;
     const adjustmentOnly = period.kind === "ADJUSTMENT";
+    const taxFacts = await payrollTaxFacts(companyId, employee, period, setting?.bpjsKesEnabled ?? true);
     const result = calculatePay({
       kind: period.kind as "REGULAR" | "THR" | "BONUS" | "ADJUSTMENT",
       basicSalary: adjustmentOnly ? 0 : employee.basicSalary,
@@ -143,6 +203,7 @@ export async function processPayroll(ctx: Ctx, periodId: string) {
       jkkClass: setting?.jkkClass ?? 1,
       bpjsKesEnabled: setting?.bpjsKesEnabled ?? true,
       includeOvertime: setting?.includeOvertime ?? false,
+      ...taxFacts,
     });
     if (employee.basicSalary <= 0 && period.kind === "REGULAR") warnings.push(`${employee.fullName} has no basic salary.`);
     warnings.push(...result.warnings.map((warning) => `${employee.fullName}: ${warning}`));
@@ -452,6 +513,7 @@ export async function simulationBaseline(ctx: Ctx, employeeId: string, periodId:
     jkkClass: setting?.jkkClass ?? 1,
     bpjsKesEnabled: setting?.bpjsKesEnabled ?? true,
     includeOvertime: setting?.includeOvertime ?? false,
+    ...(await payrollTaxFacts(companyId, employee, period, setting?.bpjsKesEnabled ?? true)),
   };
   return {
     ok: true as const,

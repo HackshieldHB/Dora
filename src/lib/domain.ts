@@ -1,5 +1,7 @@
 /** Pure DORA rules. Persistence and permissions live outside this file. */
 
+import { withholdPph21 } from "@/lib/tax-method";
+
 export type PasswordPolicy = {
   minLength: number;
   requireUpper: boolean;
@@ -718,6 +720,18 @@ export function calculatePay(input: {
   jkkClass: number;
   bpjsKesEnabled: boolean;
   includeOvertime: boolean;
+  enrollment?: { jkn: boolean; jht: boolean; jkk: boolean; jkm: boolean; jp: boolean };
+  employmentType?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  lastWorkingDay?: string;
+  priorGross?: number;
+  priorPph?: number;
+  priorMonths?: number;
+  priorPension?: number;
+  sameMonthGross?: number;
+  sameMonthPph?: number;
+  sameMonthKnown?: boolean;
 }): PayResult {
   const lines: PayLine[] = [];
   const warnings: string[] = [];
@@ -760,7 +774,13 @@ export function calculatePay(input: {
     const kesBase = Math.min(wageBase, rule.kesCap);
     const jpBase = Math.min(wageBase, rule.jpCap);
     const classIndex = Math.min(Math.max(input.jkkClass, 1), rule.jkkByClass.length) - 1;
-    if (input.bpjsKesEnabled) {
+    const enrolled = input.enrollment;
+    const jknOn = enrolled ? enrolled.jkn : input.bpjsKesEnabled;
+    const jhtOn = enrolled ? enrolled.jht : true;
+    const jpOn = enrolled ? enrolled.jp : true;
+    const jkmOn = enrolled ? enrolled.jkm : true;
+    const jkkOn = enrolled ? enrolled.jkk : true;
+    if (jknOn) {
       const employee = money(kesBase * rule.kesEmployee);
       const employer = money(kesBase * rule.kesEmployer);
       bpjsEmployee += employee;
@@ -768,32 +788,47 @@ export function calculatePay(input: {
       lines.push({ name: "BPJS Kesehatan (employee)", kind: "DEDUCTION", amount: employee });
       lines.push({ name: "BPJS Kesehatan (employer)", kind: "INFO", amount: employer });
     }
-    const jhtEmployee = money(wageBase * rule.jhtEmployee);
-    const jhtEmployer = money(wageBase * rule.jhtEmployer);
-    const jpEmployee = money(jpBase * rule.jpEmployee);
-    const jpEmployer = money(jpBase * rule.jpEmployer);
-    const jkm = money(wageBase * rule.jkmEmployer);
-    const jkk = money(wageBase * rule.jkkByClass[classIndex]);
+    const jhtEmployee = jhtOn ? money(wageBase * rule.jhtEmployee) : 0;
+    const jhtEmployer = jhtOn ? money(wageBase * rule.jhtEmployer) : 0;
+    const jpEmployee = jpOn ? money(jpBase * rule.jpEmployee) : 0;
+    const jpEmployer = jpOn ? money(jpBase * rule.jpEmployer) : 0;
+    const jkm = jkmOn ? money(wageBase * rule.jkmEmployer) : 0;
+    const jkk = jkkOn ? money(wageBase * rule.jkkByClass[classIndex]) : 0;
     bpjsEmployee += jhtEmployee + jpEmployee;
     bpjsEmployer += jhtEmployer + jpEmployer + jkm + jkk;
-    lines.push({ name: "JHT (employee)", kind: "DEDUCTION", amount: jhtEmployee });
-    lines.push({ name: "JP (employee)", kind: "DEDUCTION", amount: jpEmployee });
-    lines.push({ name: "JHT (employer)", kind: "INFO", amount: jhtEmployer });
-    lines.push({ name: "JP (employer)", kind: "INFO", amount: jpEmployer });
-    lines.push({ name: "JKM (employer)", kind: "INFO", amount: jkm });
-    lines.push({ name: "JKK (employer)", kind: "INFO", amount: jkk });
+    if (jhtOn) lines.push({ name: "JHT (employee)", kind: "DEDUCTION", amount: jhtEmployee });
+    if (jpOn) lines.push({ name: "JP (employee)", kind: "DEDUCTION", amount: jpEmployee });
+    if (jhtOn) lines.push({ name: "JHT (employer)", kind: "INFO", amount: jhtEmployer });
+    if (jpOn) lines.push({ name: "JP (employer)", kind: "INFO", amount: jpEmployer });
+    if (jkmOn) lines.push({ name: "JKM (employer)", kind: "INFO", amount: jkm });
+    if (jkkOn) lines.push({ name: "JKK (employer)", kind: "INFO", amount: jkk });
   }
 
   let pph21 = 0;
   if (applyStatutory) {
-    const ptkp = input.rule.ptkpAnnual[input.ptkp];
-    if (ptkp == null) warnings.push(`PTKP status ${input.ptkp} is not in the active platform rule, so PPh 21 was not calculated.`);
-    else {
-      const annualTaxable = Math.max(0, (earnings - bpjsEmployee) * 12 - ptkp);
-      pph21 = money(progressiveAnnualTax(annualTaxable, input.rule.progressiveAnnual) / 12);
-      lines.push({ name: "PPh 21", kind: "DEDUCTION", amount: pph21 });
-      warnings.push("PPh 21 uses the stored annual progressive brackets divided by 12. This is not the monthly TER method, so it is not an official filing figure.");
-    }
+    const pensionThisPeriod = lines.find((line) => line.name === "JP (employee)")?.amount ?? 0;
+    const withheld = withholdPph21({
+      kind: input.kind,
+      earnings,
+      ptkpStatus: input.ptkp,
+      ptkpAnnual: input.rule.ptkpAnnual,
+      brackets: input.rule.progressiveAnnual,
+      pensionThisPeriod,
+      employmentType: input.employmentType,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      lastWorkingDay: input.lastWorkingDay,
+      priorGross: input.priorGross,
+      priorPph: input.priorPph,
+      priorMonths: input.priorMonths,
+      priorPension: input.priorPension,
+      sameMonthGross: input.sameMonthGross,
+      sameMonthPph: input.sameMonthPph,
+      sameMonthKnown: input.sameMonthKnown,
+    });
+    warnings.push(...withheld.warnings);
+    pph21 = withheld.amount;
+    if (pph21 !== 0) lines.push({ name: "PPh 21", kind: "DEDUCTION", amount: pph21 });
   }
 
   const deduction = lines.filter((line) => line.kind === "DEDUCTION").reduce((sum, line) => sum + line.amount, 0);
