@@ -23,6 +23,11 @@ export const KNOWN_LOGIN_MESSAGES: ReadonlySet<string> = new Set(Object.values(L
 
 // Per client IP, independent of the account: slows down password spraying across many accounts.
 const NETWORK_POLICY = { limit: 20, windowMs: 15 * 60 * 1000, blockMs: 15 * 60 * 1000 };
+// Behind a reverse proxy every request carries the real client IP, so this bucket is per visitor.
+// In a dev setup with no proxy, all requests look like one IP and would share a single bucket,
+// locking everyone out together; set DORA_DISABLE_IP_RATELIMIT=1 there to skip the per-IP block.
+// The per-account lockout below still applies. Never set this on a real installation.
+const ipRateLimitOff = () => process.env.DORA_DISABLE_IP_RATELIMIT === "1";
 
 let dummyHash: Promise<string> | null = null;
 
@@ -36,7 +41,8 @@ export async function login(email: string, password: string) {
   if (!(await licenseAllowsUse())) throw new Error(LOGIN_MESSAGES.license);
   const normalized = email.trim().toLowerCase();
   const ipKey = `ip:${clientIp(await headers())}`;
-  if (blockedFor(ipKey) > 0) throw new Error(LOGIN_MESSAGES.network);
+  const ipLimitOff = ipRateLimitOff();
+  if (!ipLimitOff && blockedFor(ipKey) > 0) throw new Error(LOGIN_MESSAGES.network);
   const user = await prisma.user.findUnique({ where: { email: normalized }, include: { company: true } });
   const platform = await prisma.platformSetting.findUnique({ where: { id: 1 } });
   const maxFailed = user?.company?.maxFailedLogins ?? platform?.maxFailedLogins ?? 5;
@@ -49,7 +55,7 @@ export async function login(email: string, password: string) {
     const emailKey = `email:${normalized}`;
     if (blockedFor(emailKey) > 0) throw new Error(LOGIN_MESSAGES.locked);
     await spendComparison(password);
-    const networkBlocked = recordFailure(ipKey, NETWORK_POLICY);
+    const networkBlocked = ipLimitOff ? false : recordFailure(ipKey, NETWORK_POLICY);
     const accountBlocked = recordFailure(emailKey, { limit: Math.max(1, maxFailed), windowMs: lockoutMin * 60 * 1000, blockMs: lockoutMin * 60 * 1000 });
     throw new Error(networkBlocked ? LOGIN_MESSAGES.network : accountBlocked ? LOGIN_MESSAGES.locked : LOGIN_MESSAGES.wrong);
   }
@@ -66,7 +72,7 @@ export async function login(email: string, password: string) {
       data: { failedLogins: failed, lockedUntil: locking ? new Date(Date.now() + lockoutMin * 60 * 1000) : null },
     });
     await prisma.auditLog.create({ data: { companyId: user.companyId, actorId: user.id, action: "login.failed", entity: "User", entityId: user.id, detail: `${normalized} from ${ipKey.slice(3)}` } });
-    const networkBlocked = recordFailure(ipKey, NETWORK_POLICY);
+    const networkBlocked = ipLimitOff ? false : recordFailure(ipKey, NETWORK_POLICY);
     throw new Error(networkBlocked ? LOGIN_MESSAGES.network : locking ? LOGIN_MESSAGES.locked : LOGIN_MESSAGES.wrong);
   }
   clearFailures(`email:${normalized}`);
