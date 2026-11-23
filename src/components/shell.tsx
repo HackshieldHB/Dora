@@ -26,6 +26,7 @@ function Icon({ name }: { name: string }) {
     check: "M8 12l3 3 5-6M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
     chart: "M4 19h16M7 16V9M12 16V5M17 16v-4",
     gear: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6M12 3v2M12 19v2M4.9 6.5l1.7 1M17.4 16.5l1.7 1M3 12h2M19 12h2M4.9 17.5l1.7-1M17.4 7.5l1.7-1",
+    policy: "M7 3h8l4 4v14H7zM15 3v4h4M9 12h6M9 16h6",
     bell: "M6 16h12l-1.2-2.2A6 6 0 0 1 16 10V9a4 4 0 1 0-8 0v1a6 6 0 0 1-.8 3.8zM10 18a2 2 0 0 0 4 0",
     grid: "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z",
     cap: "M3 9 12 4l9 5-9 5L3 9zM7 11.2V16c1.6 1.4 8.4 1.4 10 0v-4.8",
@@ -50,6 +51,7 @@ function iconFor(href?: string) {
   if (href.startsWith("/organization")) return "building";
   if (href.startsWith("/approvals")) return "check";
   if (href.startsWith("/reports")) return "chart";
+  if (href.startsWith("/policy") || href.endsWith("/policy")) return "policy";
   if (href.startsWith("/settings") || href.startsWith("/platform") || href.startsWith("/tax")) return "gear";
   if (href.startsWith("/notifications")) return "bell";
   return "home";
@@ -156,6 +158,9 @@ function activeHref(path: string, href: string | undefined, hrefs: string[]) {
 }
 
 function crumbs(path: string) {
+  if (path === "/attendance/policy") return [{ href: "/attendance/policy", label: "Policy" }, { href: "/attendance/policy/current", label: "Attendance Policy" }];
+  if (path === "/leave/policy") return [{ href: "/leave/policy", label: "Policy" }, { href: "/leave/policy/current", label: "Leave Policy" }];
+  if (path === "/overtime/policy") return [{ href: "/overtime/policy", label: "Policy" }, { href: "/overtime/policy/current", label: "Overtime Policy" }];
   const parts = path.split("/").filter(Boolean);
   const items: { href: string; label: string }[] = [];
   let href = "";
@@ -185,7 +190,7 @@ export function Shell({
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const { home, mine, groups, settings } = splitNav(nav);
   const hrefs = nav.flatMap((item) => [item.href, ...(item.children?.map((child) => child.href) ?? [])]).filter((href): href is string => Boolean(href));
-  const canSearch = hrefs.includes("/employees");
+  const canSearch = hrefs.includes("/employees") && path !== "/employees";
   const trail = crumbs(path);
   const close = () => setOpen(false);
 
@@ -228,7 +233,7 @@ export function Shell({
     return (
       <div className="nav-group">
         <button className="nav-toggle" type="button" title={text(item.label)} aria-expanded={expanded} onClick={() => toggle(item.label, hasActive)}>
-          <Icon name={iconFor(item.href || children[0]?.href)} />
+          <Icon name={item.label === "Policy" ? "policy" : iconFor(item.href || children[0]?.href)} />
           <span className="nav-text">{text(item.label)}</span>
           <span className="chev" />
         </button>

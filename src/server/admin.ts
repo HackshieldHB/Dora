@@ -353,18 +353,33 @@ export async function saveExtra(ctx: Ctx, input: { employeeId: string; year: num
   await audit(ctx, "payroll.extra", "ExtraPay", input.employeeId, input.kind);
 }
 
-export async function saveStatutoryChoice(ctx: Ctx, input: { jkkClass: number; bpjsKesEnabled: boolean; includeOvertime: boolean }) {
+export async function saveStatutoryChoice(ctx: Ctx, input: { jkkClass: number; bpjsKesEnabled: boolean; includeOvertime: boolean; effectiveFrom: string; reason: string }) {
   if (!hasPerm(ctx, "tax.configure")) throw new Error("You can change only the allowed company statutory parameters.");
   const companyId = requireCompany(ctx);
   if (input.jkkClass < 1 || input.jkkClass > 5) throw new Error("JKK class must be from 1 to 5.");
+  const current = await prisma.companyStatutorySetting.findUnique({ where: { companyId } });
+  const before = { jkkClass: current?.jkkClass ?? 1, bpjsKesEnabled: current?.bpjsKesEnabled ?? true, includeOvertime: current?.includeOvertime ?? false };
+  const classChanged = input.jkkClass !== before.jkkClass;
+  const effectiveFrom = input.effectiveFrom.trim();
+  const reason = input.reason.replaceAll("|", "/").trim();
+  if (classChanged) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) throw new Error("Effective from is not a valid date.");
+    if (!reason) throw new Error("A risk class change needs a reason.");
+  }
   const rule = await prisma.statutoryRule.findFirst({ where: { active: true } });
   if (!rule) throw new Error("No active platform rule.");
   await prisma.companyStatutorySetting.upsert({
     where: { companyId },
-    update: input,
-    create: { companyId, ruleId: rule.id, ...input },
+    update: { jkkClass: input.jkkClass, bpjsKesEnabled: input.bpjsKesEnabled, includeOvertime: input.includeOvertime },
+    create: { companyId, ruleId: rule.id, jkkClass: input.jkkClass, bpjsKesEnabled: input.bpjsKesEnabled, includeOvertime: input.includeOvertime },
   });
-  await audit(ctx, "tax.parameters", "CompanyStatutorySetting", companyId, `JKK ${input.jkkClass}`);
+  const notes: string[] = [];
+  const dated = effectiveFrom || "—";
+  const noted = reason || "—";
+  if (classChanged) notes.push(`company-parameter | JKK class | ${before.jkkClass} | ${input.jkkClass} | ${dated} | ${noted}`);
+  if (input.bpjsKesEnabled !== before.bpjsKesEnabled) notes.push(`company-parameter | BPJS Kesehatan participation | ${before.bpjsKesEnabled ? "On" : "Off"} | ${input.bpjsKesEnabled ? "On" : "Off"} | ${dated} | ${noted}`);
+  if (input.includeOvertime !== before.includeOvertime) notes.push(`company-parameter | Reviewed overtime in the wage base | ${before.includeOvertime ? "On" : "Off"} | ${input.includeOvertime ? "On" : "Off"} | ${dated} | ${noted}`);
+  for (const detail of notes) await audit(ctx, "tax.parameters", "CompanyStatutorySetting", companyId, detail);
 }
 
 const DATA_SCOPES = new Set(["SELF", "DIRECT_REPORTS", "DEPARTMENT", "BRANCH", "COMPANY"]);

@@ -237,6 +237,46 @@ export function loanInstallment(amount: number, tenor: number): number {
   return Math.ceil(amount / tenor);
 }
 
+export function shiftMonth(month: string, count: number): string {
+  const year = Number(month.slice(0, 4));
+  const index = Number(month.slice(5, 7)) - 1 + count;
+  const date = new Date(Date.UTC(year, index, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function loanSchedule(amount: number, tenor: number, startMonth: string): { month: string; amount: number }[] {
+  if (!/^\d{4}-\d{2}$/.test(startMonth) || tenor < 1 || amount <= 0) return [];
+  const regular = loanInstallment(amount, tenor);
+  const rows: { month: string; amount: number }[] = [];
+  let left = amount;
+  for (let index = 0; index < tenor && left > 0; index += 1) {
+    const value = index === tenor - 1 ? left : Math.min(regular, left);
+    rows.push({ month: shiftMonth(startMonth, index), amount: value });
+    left -= value;
+  }
+  return rows;
+}
+
+export function paidLoanMonths(schedule: { month: string }[], installments: { month: string; settled: boolean }[]): Set<string> {
+  const taken = new Set(installments.filter((row) => row.settled && row.month).map((row) => row.month));
+  let legacy = installments.filter((row) => row.settled && !row.month).length;
+  for (const slot of schedule) {
+    if (legacy <= 0) break;
+    if (!taken.has(slot.month)) {
+      taken.add(slot.month);
+      legacy -= 1;
+    }
+  }
+  return taken;
+}
+
+export function kpiAchievement(direction: string, target: number, actual: number): number {
+  if (target <= 0 || actual < 0) return 0;
+  if (direction === "LOWER") return actual === 0 ? 100 : (target / actual) * 100;
+  if (direction === "MILESTONE") return actual >= target ? 100 : (actual / target) * 100;
+  return (actual / target) * 100;
+}
+
 export function leaveRemaining(input: {
   mode: string;
   entitled: number;

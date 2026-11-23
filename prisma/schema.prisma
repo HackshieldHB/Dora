@@ -588,6 +588,7 @@ model EmployeeLoan {
   tenor        Int
   installment  Int
   remaining    Int
+  startMonth   String   @default("")
   reason       String   @default("")
   status       String   @default("PENDING")
   approverId   String   @default("")
@@ -696,7 +697,9 @@ model LoanInstallment {
   loanId    String
   loan      EmployeeLoan @relation(fields: [loanId], references: [id], onDelete: Cascade)
   periodId  String
+  month     String       @default("")
   amount    Int
+  settled   Boolean      @default(true)
   createdAt DateTime     @default(now())
   @@unique([loanId, periodId])
 }
@@ -715,8 +718,17 @@ model Goal {
   current      Float    @default(0)
   startDate    String
   endDate      String
-  status       String   @default("ACTIVE")
-  createdAt    DateTime @default(now())
+  status         String   @default("ACTIVE")
+  weight         Int      @default(0)
+  direction      String   @default("HIGHER")
+  approvalStatus String   @default("")
+  evalStatus     String   @default("")
+  approverId     String   @default("")
+  feedback       String   @default("")
+  progressNote   String   @default("")
+  decisionNote   String   @default("")
+  score          Int      @default(0)
+  createdAt      DateTime @default(now())
   @@index([companyId, employeeId])
 }
 

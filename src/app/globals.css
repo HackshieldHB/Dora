@@ -215,6 +215,9 @@ a.stat-card:hover { transform: translateY(-2px); border-color: #c7ebe4; }
 .toolbar-actions { display: flex; align-items: center; gap: 12px; grid-column: 1 / -1; }
 
 .table-wrap { overflow-x: auto; }
+.table-scroll { max-height: 28rem; overflow: auto; }
+details.fold { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: white; }
+details.fold > summary { cursor: pointer; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid #eef2f7; vertical-align: middle; }
 th { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }

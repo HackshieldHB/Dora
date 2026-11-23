@@ -12,6 +12,8 @@ import {
   countLeaveDays,
   eachDate,
   employmentFactor,
+  loanSchedule,
+  paidLoanMonths,
   payrollApproverIds,
   ruleError,
   ruleForDate,
@@ -124,6 +126,55 @@ export async function statutoryRuleLine(period: { startDate: string; status: str
   return { state: "pending" as const, code: row.code, name: row.name, effectiveFrom: row.effectiveFrom, source: row.source, official: row.approvalStatus === "APPROVED" };
 }
 
+const LOAN_LINE = "Employee loan installment";
+
+async function attachDueLoans(ctx: Ctx, employeeId: string, period: { id: string; kind: string; startDate: string; status: string; preparedById: string }) {
+  if (period.kind !== "REGULAR") return;
+  const month = period.startDate.slice(0, 7);
+  const loans = await prisma.employeeLoan.findMany({ where: { employeeId, status: "ACTIVE", startMonth: { not: "" } }, include: { installments: true, employee: true } });
+  for (const loan of loans) {
+    const schedule = loanSchedule(loan.amount, loan.tenor, loan.startMonth);
+    const slot = schedule.find((row) => row.month === month);
+    if (!slot || slot.amount <= 0) continue;
+    if (paidLoanMonths(schedule, loan.installments).has(month)) continue;
+    if (loan.installments.some((row) => !row.settled)) continue;
+    const named = await prisma.payrollAdjustment.findFirst({
+      where: { periodId: period.id, employeeId, OR: [{ reason: { contains: loan.id } }, { name: "Employee loan", amount: slot.amount }] },
+    });
+    if (!named) {
+      await recordAdjustment(ctx, { periodId: period.id, employeeId, name: LOAN_LINE, kind: "DEDUCTION", amount: slot.amount, reason: `Loan ${loan.id} installment ${month}` });
+    }
+    await prisma.loanInstallment.create({ data: { loanId: loan.id, periodId: period.id, month, amount: slot.amount, settled: false } });
+  }
+}
+
+export async function queueLoanInstallment(ctx: Ctx, loanId: string, periodId: string) {
+  const companyId = requireCompany(ctx);
+  const period = await prisma.payrollPeriod.findFirst({ where: { id: periodId, companyId, status: { in: ["DRAFT", "PROCESSED", "NEEDS_REVISION"] } } });
+  if (!period || period.kind !== "REGULAR") throw new Error("Choose a draft or processed regular payroll period.");
+  const loan = await prisma.employeeLoan.findFirst({ where: { id: loanId, companyId, status: "ACTIVE" }, include: { installments: true, employee: true } });
+  if (!loan || loan.remaining <= 0) throw new Error("There is no active balance on this loan.");
+  if (!loan.startMonth) {
+    await prisma.employeeLoan.update({ where: { id: loan.id }, data: { startMonth: period.startDate.slice(0, 7) } });
+    loan.startMonth = period.startDate.slice(0, 7);
+  }
+  const month = period.startDate.slice(0, 7);
+  const schedule = loanSchedule(loan.amount, loan.tenor, loan.startMonth);
+  const slot = schedule.find((row) => row.month === month);
+  if (!slot) throw new Error("This payroll period is outside the installment schedule.");
+  if (paidLoanMonths(schedule, loan.installments).has(month)) throw new Error("This installment is already paid.");
+  if (loan.installments.some((row) => row.periodId === period.id)) throw new Error("This loan already has an installment in that period.");
+  if (loan.installments.some((row) => !row.settled)) throw new Error("An earlier installment is still waiting in another payroll period.");
+  const named = await prisma.payrollAdjustment.findFirst({
+    where: { periodId: period.id, employeeId: loan.employeeId, OR: [{ reason: { contains: loan.id } }, { name: "Employee loan", amount: slot.amount }] },
+  });
+  if (!named) {
+    await recordAdjustment(ctx, { periodId: period.id, employeeId: loan.employeeId, name: LOAN_LINE, kind: "DEDUCTION", amount: slot.amount, reason: `Loan ${loan.id} installment ${month} for ${loan.employee.fullName}` });
+  }
+  await prisma.loanInstallment.create({ data: { loanId: loan.id, periodId: period.id, month, amount: slot.amount, settled: false } });
+  await audit(ctx, "loan.installment", "EmployeeLoan", loan.id, String(slot.amount));
+}
+
 export async function processPayroll(ctx: Ctx, periodId: string) {
   if (!hasPerm(ctx, "payroll.prepare")) throw new Error("Prepare Payroll permission is required.");
   const companyId = requireCompany(ctx);
@@ -171,6 +222,7 @@ export async function processPayroll(ctx: Ctx, periodId: string) {
       },
       _sum: { compensationIdr: true },
     });
+    if (period.kind === "REGULAR") await attachDueLoans(ctx, employee.id, period);
     const adjustments = await prisma.payrollAdjustment.findMany({ where: { periodId: period.id, employeeId: employee.id } });
     if (period.kind === "ADJUSTMENT" && adjustments.length === 0) continue;
     const extra = period.kind === "THR" || period.kind === "BONUS"
@@ -332,6 +384,13 @@ export async function finalizePayroll(ctx: Ctx, periodId: string) {
   if (!period || period.status !== "APPROVED") throw new Error("Only an approved payroll can be finalized.");
   if (!canApprovePayroll(period.approvedById, period.preparedById)) throw new Error("Finalization is blocked because the approver is not different from the preparer.");
   await prisma.payrollPeriod.update({ where: { id: period.id }, data: { status: "LOCKED" } });
+  const open = await prisma.loanInstallment.findMany({ where: { periodId: period.id, settled: false }, include: { loan: true } });
+  for (const row of open) {
+    if (row.loan.status !== "ACTIVE") continue;
+    const remaining = Math.max(0, row.loan.remaining - row.amount);
+    await prisma.employeeLoan.update({ where: { id: row.loanId }, data: { remaining, status: remaining === 0 ? "PAID_OFF" : "ACTIVE" } });
+    await prisma.loanInstallment.update({ where: { id: row.id }, data: { settled: true } });
+  }
   await audit(ctx, "payroll.lock", "PayrollPeriod", period.id, "LOCKED");
 }
 

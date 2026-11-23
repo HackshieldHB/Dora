@@ -55,3 +55,37 @@ function programOf(field: string) {
   if (field.startsWith("PTKP") || field === "brackets") return "PPh 21";
   return "";
 }
+
+export type CompanyParameterChange = {
+  id: string;
+  program: string;
+  field: string;
+  before: string;
+  after: string;
+  effectiveFrom: string;
+  reason: string;
+  user: string;
+  when: string;
+};
+
+/** Reads company-parameter audit lines. A sample statutory rule is not a change. */
+export function companyParameterChanges(logs: { id: string; detail: string; createdAt: Date; actor: string }[]): CompanyParameterChange[] {
+  const rows: CompanyParameterChange[] = [];
+  for (const log of logs) {
+    const parts = log.detail.split(" | ");
+    if (parts[0] !== "company-parameter" || parts.length < 6) continue;
+    const field = parts[1];
+    rows.push({
+      id: log.id,
+      program: field === "JKK class" ? "JKK" : field === "BPJS Kesehatan participation" ? "JKN" : "BPJS",
+      field,
+      before: parts[2],
+      after: parts[3],
+      effectiveFrom: parts[4],
+      reason: parts.slice(5).join(" | "),
+      user: log.actor,
+      when: log.createdAt.toISOString().slice(0, 16).replace("T", " "),
+    });
+  }
+  return rows;
+}

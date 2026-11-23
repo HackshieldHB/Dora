@@ -9,7 +9,7 @@ import { applyEmployeeImport, cancelEmployeeImport, stageEmployeeImport } from "
 import { redirect } from "next/navigation";
 import { addAdjustment, decidePayroll, finalizePayroll, openAdjustmentPeriod, processPayroll, publishPayslips, resendPayslips, submitPayroll } from "@/server/payroll";
 import { cancelLeave, clock, correctAttendance, decideLeave, decideLeaveCancel, decideOvertime, resubmitLeave, resubmitOvertime, reviewOvertimeCompensation, submitLeave, submitOvertime } from "@/server/time";
-import { cancelTravel, createGoal, decideClaim, decideLoan, decideOffsite, postClaim, postLoanInstallment, reviseGoal, saveBenefits, saveTravelDay, submitClaim, submitGoal, submitLoan, submitOffsite, submitTravel, updateGoal } from "@/server/workforce";
+import { cancelTravel, createGoal, decideClaim, decideKpi, decideKpiEval, decideLoan, decideOffsite, postClaim, postLoanInstallment, reviewKpi, reviseGoal, saveBenefits, saveTravelDay, submitClaim, submitGoal, submitKpi, submitLoan, submitOffsite, submitTravel, updateGoal } from "@/server/workforce";
 import { assignParticipant, cancelTraining, createTraining, markAttendance, registerTraining, removeParticipant, submitEvaluation, updateTraining, uploadCertificate } from "@/server/training";
 import { prisma } from "@/lib/db";
 import { verifyPassword } from "@/lib/password";
@@ -427,7 +427,8 @@ export async function extraAction(formData: FormData) {
 }
 
 export async function checkRegulatoryAction(formData: FormData) {
-  const path = text(formData.get("return")) === "platform" ? "/platform/rules" : "/tax/config";
+  const where = text(formData.get("return"));
+  const path = where === "platform" ? "/platform/rules" : "/tax/bpjs?view=changes";
   await act(path, async () => checkRegulatoryUpdate(await requireUser()));
 }
 
@@ -440,7 +441,15 @@ export async function decideRuleAction(formData: FormData) {
 }
 
 export async function statutoryAction(formData: FormData) {
-  await act("/tax/config", async () => saveStatutoryChoice(await assertPerm("tax.configure"), { jkkClass: integer(formData.get("jkkClass")), bpjsKesEnabled: checked(formData.get("bpjsKesEnabled")), includeOvertime: checked(formData.get("includeOvertime")) }));
+  const back = text(formData.get("return"));
+  const path = back === "/tax/bpjs" || back.startsWith("/tax/bpjs?") ? back : "/tax/bpjs?view=changes";
+  await act(path, async () => saveStatutoryChoice(await assertPerm("tax.configure"), {
+    jkkClass: integer(formData.get("jkkClass")),
+    bpjsKesEnabled: checked(formData.get("bpjsKesEnabled")),
+    includeOvertime: checked(formData.get("includeOvertime")),
+    effectiveFrom: text(formData.get("effectiveFrom")),
+    reason: text(formData.get("reason")),
+  }));
 }
 
 export async function platformRuleAction(formData: FormData) {
@@ -751,16 +760,49 @@ export async function goalAction(formData: FormData) {
     target: decimal(formData.get("target")),
     startDate: text(formData.get("startDate")),
     endDate: text(formData.get("endDate")),
+    weight: formData.get("weight") ? integer(formData.get("weight")) : undefined,
+    direction: text(formData.get("direction")),
+    submit: text(formData.get("intent")) === "submit",
   }));
 }
 
 export async function goalProgressAction(formData: FormData) {
-  const back = text(formData.get("return")) === "/goals" ? "/goals" : "/me/goals";
+  const requested = text(formData.get("return"));
+  const back = requested === "/goals" || requested === "/me/goals?tab=assigned" ? requested : "/me/goals";
   const targetRaw = formData.get("target");
   await act(back, async () => updateGoal(await assertPerm("employees.self"), text(formData.get("id")), {
     current: decimal(formData.get("current")),
     target: typeof targetRaw === "string" && targetRaw.trim() !== "" ? decimal(targetRaw) : undefined,
-    status: text(formData.get("status")),
+    status: text(formData.get("status")) || "OPEN",
+    note: text(formData.get("note")),
+    submit: text(formData.get("intent")) === "submit",
+  }));
+}
+
+export async function kpiSubmitAction(formData: FormData) {
+  await act("/goals", async () => submitKpi(await assertPerm("employees.self"), text(formData.get("id"))));
+}
+
+export async function kpiDecisionAction(formData: FormData) {
+  await act("/approvals/pending", async () => {
+    await decideKpi(await assertPerm("approvals.act"), text(formData.get("id")), chosen(formData, "decision") as "APPROVED" | "REJECTED" | "RETURNED", text(formData.get("note")));
+    return "KPI decision saved.";
+  });
+}
+
+export async function kpiEvalDecisionAction(formData: FormData) {
+  await act("/approvals/pending", async () => {
+    await decideKpiEval(await assertPerm("approvals.act"), text(formData.get("id")), chosen(formData, "decision") as "APPROVED" | "REJECTED" | "RETURNED", text(formData.get("note")));
+    return "Evaluation decision saved.";
+  });
+}
+
+export async function kpiReviewAction(formData: FormData) {
+  await act("/goals", async () => reviewKpi(await assertPerm("employees.self"), text(formData.get("id")), {
+    decision: text(formData.get("intent")) === "return" ? "RETURNED" : "ACCEPT",
+    score: formData.get("score") ? integer(formData.get("score")) : undefined,
+    feedback: text(formData.get("feedback")),
+    note: text(formData.get("note")),
   }));
 }
 

@@ -13,7 +13,9 @@ import {
   overtimeWithinSubmitWindow,
   countLeaveDays,
   employmentFactor,
+  kpiAchievement,
   lateMinutes,
+  loanSchedule,
   leaveCancelMode,
   addMonths,
   daysUntilMonthDay,
@@ -302,6 +304,10 @@ describe("Indonesian leave and loans", () => {
     expect(serviceMonths("2025-06-02", "2026-06-01")).toBe(11);
     expect(serviceMonths("2025-06-02", "2026-06-02")).toBe(12);
     expect(loanInstallment(1_000_000, 3)).toBe(333_334);
+    expect(loanSchedule(5_000_000, 2, "2026-12")).toEqual([{ month: "2026-12", amount: 2_500_000 }, { month: "2027-01", amount: 2_500_000 }]);
+    expect(loanSchedule(1_000_000, 3, "2026-01").reduce((sum, row) => sum + row.amount, 0)).toBe(1_000_000);
+    expect(kpiAchievement("HIGHER", 12, 10)).toBeCloseTo(83.333, 2);
+    expect(kpiAchievement("MILESTONE", 12, 12)).toBe(100);
     expect(addMonths("2026-08-07", 3)).toBe("2026-11-07");
     expect(addMonths("2026-01-31", 1)).toBe("2026-02-28");
     expect(withinComingDays("2026-11-07", "2026-10-08", 30)).toBe(true);
