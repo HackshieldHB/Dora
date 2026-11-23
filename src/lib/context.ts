@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { parsePermissions, todayJakarta } from "./format";
 import { sessionDeadline } from "./session-limit";
+import { licenseAllowsUse } from "./license";
 
 export type Ctx = {
   userId: string;
@@ -99,6 +100,9 @@ export async function getCtx(): Promise<Ctx | null> {
   const jar = await cookies();
   const token = jar.get(COOKIE)?.value;
   if (!token) return null;
+  // Every page, server action and API route resolves the user here, so this one check
+  // stops all use of a release build without a valid license (cached; cheap per request).
+  if (!(await licenseAllowsUse())) return null;
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashToken(token) },
     include: { user: { include: { role: true, employee: true, company: true } } },
@@ -175,7 +179,18 @@ export async function startSession(userId: string, timeoutMin: number) {
   const expiresAt = new Date(Date.now() + timeoutMin * 60 * 1000);
   await prisma.session.create({ data: { userId, tokenHash: hashToken(token), expiresAt } });
   const jar = await cookies();
-  jar.set(COOKIE, token, { httpOnly: true, sameSite: "lax", path: "/", expires: expiresAt });
+  jar.set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: secureCookies(), path: "/", expires: expiresAt });
+}
+
+/**
+ * Session cookies carry the Secure flag in production, so they are never sent over plain HTTP.
+ * DORA_COOKIE_SECURE=false is an escape hatch for a closed intranet without TLS (not recommended).
+ */
+export function secureCookies(): boolean {
+  const flag = process.env.DORA_COOKIE_SECURE?.trim().toLowerCase();
+  if (flag === "true") return true;
+  if (flag === "false") return false;
+  return process.env.NODE_ENV === "production";
 }
 
 export async function clearSession() {

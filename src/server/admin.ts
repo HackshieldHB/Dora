@@ -231,23 +231,27 @@ export async function saveHoliday(ctx: Ctx, date: string, name: string) {
   await audit(ctx, "holiday.save", "Holiday", date, name);
 }
 
-export async function saveAttendancePolicy(ctx: Ctx, graceMinutes: number, lateDeductionPerMinute: number) {
+export async function saveAttendancePolicy(ctx: Ctx, input: { graceMinutes: number; lateDeductionPerMinute: number; lateIntervalMinutes: number; lateCapEnabled: boolean; lateDailyMax: number }) {
   if (!hasPerm(ctx, "attendance.configure")) throw new Error("You do not have permission to edit attendance policy.");
+  if (input.lateIntervalMinutes < 1) throw new Error("The penalty interval must be at least 1 minute.");
+  if (input.lateDeductionPerMinute < 0 || input.lateDailyMax < 0) throw new Error("The penalty amount cannot be negative.");
   const companyId = requireCompany(ctx);
   await prisma.attendancePolicy.upsert({
     where: { companyId },
-    update: { graceMinutes, lateDeductionPerMinute },
-    create: { companyId, graceMinutes, lateDeductionPerMinute },
+    update: input,
+    create: { companyId, ...input },
   });
-  await audit(ctx, "attendance.policy", "AttendancePolicy", companyId, `${graceMinutes} grace`);
+  await audit(ctx, "attendance.policy", "AttendancePolicy", companyId, `${input.graceMinutes} grace`);
 }
 
-export async function saveOvertimePolicy(ctx: Ctx, input: { allowBefore: boolean; allowAfter: boolean; multiplier: number; hourlyDivisor: number; maxHoursPerDay: number; roundingMinutes: number; mealAllowance: number }) {
-  if (input.mealAllowance < 0) throw new Error("The meal allowance cannot be negative.");
+export async function saveOvertimePolicy(ctx: Ctx, input: { allowBefore: boolean; allowAfter: boolean; multiplier: number; hourlyDivisor: number; maxHoursPerDay: number; roundingMinutes: number; mealAllowance: number; payMethod: string; fixedHourlyRate: number; submitLimitEnabled: boolean; submitLimitDays: number }) {
+  if (input.mealAllowance < 0 || input.fixedHourlyRate < 0) throw new Error("The meal allowance cannot be negative.");
   if (!hasPerm(ctx, "overtime.configure")) throw new Error("You do not have permission to edit overtime policy.");
+  if (input.submitLimitEnabled && input.submitLimitDays < 0) throw new Error("The overtime submission limit cannot be negative.");
   const companyId = requireCompany(ctx);
   if (input.hourlyDivisor <= 0) throw new Error("The hourly divisor must be greater than zero.");
-  await prisma.overtimePolicy.upsert({ where: { companyId }, update: input, create: { companyId, ...input } });
+  const stored = { ...input, payMethod: input.fixedHourlyRate > 0 ? "FIXED_HOURLY" : "FORMULA" };
+  await prisma.overtimePolicy.upsert({ where: { companyId }, update: stored, create: { companyId, ...stored } });
   await audit(ctx, "overtime.policy", "OvertimePolicy", companyId, String(input.multiplier));
 }
 
@@ -349,18 +353,33 @@ export async function saveExtra(ctx: Ctx, input: { employeeId: string; year: num
   await audit(ctx, "payroll.extra", "ExtraPay", input.employeeId, input.kind);
 }
 
-export async function saveStatutoryChoice(ctx: Ctx, input: { jkkClass: number; bpjsKesEnabled: boolean; includeOvertime: boolean }) {
+export async function saveStatutoryChoice(ctx: Ctx, input: { jkkClass: number; bpjsKesEnabled: boolean; includeOvertime: boolean; effectiveFrom: string; reason: string }) {
   if (!hasPerm(ctx, "tax.configure")) throw new Error("You can change only the allowed company statutory parameters.");
   const companyId = requireCompany(ctx);
   if (input.jkkClass < 1 || input.jkkClass > 5) throw new Error("JKK class must be from 1 to 5.");
+  const current = await prisma.companyStatutorySetting.findUnique({ where: { companyId } });
+  const before = { jkkClass: current?.jkkClass ?? 1, bpjsKesEnabled: current?.bpjsKesEnabled ?? true, includeOvertime: current?.includeOvertime ?? false };
+  const classChanged = input.jkkClass !== before.jkkClass;
+  const effectiveFrom = input.effectiveFrom.trim();
+  const reason = input.reason.replaceAll("|", "/").trim();
+  if (classChanged) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) throw new Error("Effective from is not a valid date.");
+    if (!reason) throw new Error("A risk class change needs a reason.");
+  }
   const rule = await prisma.statutoryRule.findFirst({ where: { active: true } });
   if (!rule) throw new Error("No active platform rule.");
   await prisma.companyStatutorySetting.upsert({
     where: { companyId },
-    update: input,
-    create: { companyId, ruleId: rule.id, ...input },
+    update: { jkkClass: input.jkkClass, bpjsKesEnabled: input.bpjsKesEnabled, includeOvertime: input.includeOvertime },
+    create: { companyId, ruleId: rule.id, jkkClass: input.jkkClass, bpjsKesEnabled: input.bpjsKesEnabled, includeOvertime: input.includeOvertime },
   });
-  await audit(ctx, "tax.parameters", "CompanyStatutorySetting", companyId, `JKK ${input.jkkClass}`);
+  const notes: string[] = [];
+  const dated = effectiveFrom || "—";
+  const noted = reason || "—";
+  if (classChanged) notes.push(`company-parameter | JKK class | ${before.jkkClass} | ${input.jkkClass} | ${dated} | ${noted}`);
+  if (input.bpjsKesEnabled !== before.bpjsKesEnabled) notes.push(`company-parameter | BPJS Kesehatan participation | ${before.bpjsKesEnabled ? "On" : "Off"} | ${input.bpjsKesEnabled ? "On" : "Off"} | ${dated} | ${noted}`);
+  if (input.includeOvertime !== before.includeOvertime) notes.push(`company-parameter | Reviewed overtime in the wage base | ${before.includeOvertime ? "On" : "Off"} | ${input.includeOvertime ? "On" : "Off"} | ${dated} | ${noted}`);
+  for (const detail of notes) await audit(ctx, "tax.parameters", "CompanyStatutorySetting", companyId, detail);
 }
 
 const DATA_SCOPES = new Set(["SELF", "DIRECT_REPORTS", "DEPARTMENT", "BRANCH", "COMPANY"]);

@@ -1,5 +1,7 @@
 /** Pure DORA rules. Persistence and permissions live outside this file. */
 
+import { withholdPph21 } from "@/lib/tax-method";
+
 export type PasswordPolicy = {
   minLength: number;
   requireUpper: boolean;
@@ -235,6 +237,46 @@ export function loanInstallment(amount: number, tenor: number): number {
   return Math.ceil(amount / tenor);
 }
 
+export function shiftMonth(month: string, count: number): string {
+  const year = Number(month.slice(0, 4));
+  const index = Number(month.slice(5, 7)) - 1 + count;
+  const date = new Date(Date.UTC(year, index, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+export function loanSchedule(amount: number, tenor: number, startMonth: string): { month: string; amount: number }[] {
+  if (!/^\d{4}-\d{2}$/.test(startMonth) || tenor < 1 || amount <= 0) return [];
+  const regular = loanInstallment(amount, tenor);
+  const rows: { month: string; amount: number }[] = [];
+  let left = amount;
+  for (let index = 0; index < tenor && left > 0; index += 1) {
+    const value = index === tenor - 1 ? left : Math.min(regular, left);
+    rows.push({ month: shiftMonth(startMonth, index), amount: value });
+    left -= value;
+  }
+  return rows;
+}
+
+export function paidLoanMonths(schedule: { month: string }[], installments: { month: string; settled: boolean }[]): Set<string> {
+  const taken = new Set(installments.filter((row) => row.settled && row.month).map((row) => row.month));
+  let legacy = installments.filter((row) => row.settled && !row.month).length;
+  for (const slot of schedule) {
+    if (legacy <= 0) break;
+    if (!taken.has(slot.month)) {
+      taken.add(slot.month);
+      legacy -= 1;
+    }
+  }
+  return taken;
+}
+
+export function kpiAchievement(direction: string, target: number, actual: number): number {
+  if (target <= 0 || actual < 0) return 0;
+  if (direction === "LOWER") return actual === 0 ? 100 : (target / actual) * 100;
+  if (direction === "MILESTONE") return actual >= target ? 100 : (actual / target) * 100;
+  return (actual / target) * 100;
+}
+
 export function leaveRemaining(input: {
   mode: string;
   entitled: number;
@@ -248,6 +290,17 @@ export function leaveRemaining(input: {
   if (input.expiryDate && input.asOf > input.expiryDate) return 0;
   if (input.expiryMonth > 0 && monthNumber(input.asOf) > input.expiryMonth) return 0;
   return Math.max(0, input.entitled + input.carryIn - input.used);
+}
+
+export function cappedLeaveAllowance(input: { balanceMode: string; quotaDays: number; maxCalendarDays: number }): { entitled: number; calendar: boolean } | null {
+  if (input.balanceMode !== "NONE") return null;
+  if (input.maxCalendarDays > 0) return { entitled: input.maxCalendarDays, calendar: true };
+  if (input.quotaDays > 0) return { entitled: input.quotaDays, calendar: false };
+  return null;
+}
+
+export function cappedLeaveRemaining(entitled: number, used: number): number {
+  return Math.max(0, entitled - used);
 }
 
 export function policyEntitled(input: { mode: string; quotaDays: number; quotaPeriod: string; accrualRate: number; asOf: string }): number {
@@ -546,6 +599,71 @@ export function compensationIdr(validMinutes: number, basicSalary: number, hourl
   return Math.round((validMinutes / 60) * (basicSalary / hourlyDivisor) * multiplier);
 }
 
+export function compensationAmount(input: { validMinutes: number; basicSalary: number; hourlyDivisor: number; multiplier: number; payMethod?: string; fixedHourlyRate?: number }): number {
+  const hourly = input.fixedHourlyRate ?? 0;
+  if (hourly > 0) {
+    if (input.validMinutes <= 0) return 0;
+    return Math.round((input.validMinutes / 60) * hourly);
+  }
+  return compensationIdr(input.validMinutes, input.basicSalary, input.hourlyDivisor, input.multiplier);
+}
+
+export function fullPayrollColumn(line: { name: string; kind: string }): string {
+  if (line.kind === "INFO") return "";
+  if (line.kind === "INCENTIVE") return "A21";
+  const name = line.name.toLowerCase();
+  if (line.kind === "EARNING") {
+    if (name.includes("basic salary") || name.includes("gaji pokok")) return "A01";
+    if (name.includes("transport") || name.includes("makan")) return "A03";
+    if (name.includes("motor")) return "A06";
+    if (name.includes("marketing")) return "A08";
+    if (name.includes("jabatan")) return "A21";
+    if (name.includes("pajak") || name.includes("tax allowance")) return "B03";
+    if (name.includes("overtime") || name.includes("lembur")) return "L01";
+    return "TUL";
+  }
+  if (name.includes("unpaid") || name.includes("alpha")) return "D01";
+  if (name.includes("late") || name.includes("keterlambatan")) return "D02";
+  if (name.includes("jht") && !name.includes("employer") && !name.includes("pemberi")) return "D03";
+  if (name.includes("jp") && !name.includes("employer") && !name.includes("pemberi")) return "D05";
+  if (name.includes("kesehatan") && !name.includes("employer") && !name.includes("pemberi")) return "D07";
+  if (name.includes("pph")) return "D09";
+  if (name.includes("ganti rugi")) return "PG";
+  if (name.includes("loan") || name.includes("pinjaman")) return "PP";
+  return "PTL1";
+}
+
+export function lateDeductionAmount(lateMinutes: number, amountPerInterval: number, intervalMinutes = 1, capEnabled = false, dailyMax = 0): number {
+  if (lateMinutes <= 0 || amountPerInterval <= 0) return 0;
+  const interval = Math.max(1, intervalMinutes);
+  const raw = Math.floor(lateMinutes / interval) * amountPerInterval;
+  if (!capEnabled || dailyMax <= 0) return raw;
+  return Math.min(raw, dailyMax);
+}
+
+export function calendarDaysBetween(start: string, end: string): number {
+  const from = Date.parse(`${start}T00:00:00Z`);
+  const to = Date.parse(`${end}T00:00:00Z`);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return Number.NaN;
+  return Math.round((to - from) / 86_400_000);
+}
+
+export function overtimeWithinSubmitWindow(workDate: string, today: string, enabled: boolean, maxDays: number): boolean {
+  if (!enabled) return true;
+  const days = calendarDaysBetween(workDate, today);
+  if (!Number.isFinite(days) || days < 0) return true;
+  return days <= Math.max(0, maxDays);
+}
+
+export function locationCheck(input: { lat: number; lng: number; accuracy: number | null; distanceMeters: number | null; radiusMeters: number }): "CLEAR" | "SUSPECTED" | "UNVERIFIED" {
+  if (!Number.isFinite(input.lat) || !Number.isFinite(input.lng)) return "UNVERIFIED";
+  if (input.accuracy == null || !Number.isFinite(input.accuracy)) return "UNVERIFIED";
+  if (input.accuracy <= 0) return "SUSPECTED";
+  if (input.accuracy > 100) return "UNVERIFIED";
+  if (input.radiusMeters > 0 && input.distanceMeters != null && input.distanceMeters > input.radiusMeters) return "SUSPECTED";
+  return "CLEAR";
+}
+
 export function employmentFactor(input: {
   prorate: boolean;
   periodStart: string;
@@ -588,7 +706,7 @@ export type RuleDefinition = {
   progressiveAnnual: { upTo: number | null; rate: number }[];
 };
 
-export type PayLine = { name: string; kind: "EARNING" | "DEDUCTION" | "INFO"; amount: number };
+export type PayLine = { name: string; kind: "EARNING" | "DEDUCTION" | "INFO" | "INCENTIVE"; amount: number };
 
 export type PayResult = {
   lines: PayLine[];
@@ -630,7 +748,11 @@ export function calculatePay(input: {
   workdaysInPeriod: number;
   lateMinutes: number;
   lateDeductionPerMinute: number;
-  adjustments: { name: string; kind: "EARNING" | "DEDUCTION"; amount: number }[];
+  lateDaysMinutes?: number[];
+  lateIntervalMinutes?: number;
+  lateCapEnabled?: boolean;
+  lateDailyMax?: number;
+  adjustments: { name: string; kind: "EARNING" | "DEDUCTION" | "INCENTIVE"; amount: number }[];
   thrAmount: number;
   bonusAmount: number;
   ptkp: string;
@@ -638,6 +760,18 @@ export function calculatePay(input: {
   jkkClass: number;
   bpjsKesEnabled: boolean;
   includeOvertime: boolean;
+  enrollment?: { jkn: boolean; jht: boolean; jkk: boolean; jkm: boolean; jp: boolean };
+  employmentType?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  lastWorkingDay?: string;
+  priorGross?: number;
+  priorPph?: number;
+  priorMonths?: number;
+  priorPension?: number;
+  sameMonthGross?: number;
+  sameMonthPph?: number;
+  sameMonthKnown?: boolean;
 }): PayResult {
   const lines: PayLine[] = [];
   const warnings: string[] = [];
@@ -653,15 +787,15 @@ export function calculatePay(input: {
       if (input.workdaysInPeriod <= 0 || basic <= 0) warnings.push("Unpaid leave was not priced because the working-day or salary base is zero.");
       else lines.push({ name: "Unpaid leave", kind: "DEDUCTION", amount: money((basic / input.workdaysInPeriod) * input.unpaidLeaveDays) });
     }
-    if (input.lateMinutes > 0 && input.lateDeductionPerMinute > 0) {
-      lines.push({ name: "Late deduction", kind: "DEDUCTION", amount: input.lateMinutes * input.lateDeductionPerMinute });
-    }
+    const lateDays = input.lateDaysMinutes ?? (input.lateMinutes > 0 ? [input.lateMinutes] : []);
+    const lateAmount = lateDays.reduce((sum, minutes) => sum + lateDeductionAmount(minutes, input.lateDeductionPerMinute, input.lateIntervalMinutes ?? 1, input.lateCapEnabled ?? false, input.lateDailyMax ?? 0), 0);
+    if (lateAmount > 0) lines.push({ name: "Late deduction", kind: "DEDUCTION", amount: lateAmount });
   }
   if (input.kind === "THR" && input.thrAmount > 0) lines.push({ name: "THR", kind: "EARNING", amount: input.thrAmount });
   if (input.kind === "BONUS" && input.bonusAmount > 0) lines.push({ name: "Bonus", kind: "EARNING", amount: input.bonusAmount });
   for (const adjustment of input.adjustments) lines.push({ name: adjustment.name, kind: adjustment.kind, amount: adjustment.amount });
 
-  const earnings = lines.filter((line) => line.kind === "EARNING").reduce((sum, line) => sum + line.amount, 0);
+  const earnings = lines.filter((line) => line.kind === "EARNING" || line.kind === "INCENTIVE").reduce((sum, line) => sum + line.amount, 0);
   let wageBase = 0;
   if (input.kind === "REGULAR") {
     wageBase = basic + input.components.filter((row) => row.kind === "EARNING" && row.calc === "FIXED").reduce((sum, row) => sum + row.amount, 0);
@@ -680,7 +814,13 @@ export function calculatePay(input: {
     const kesBase = Math.min(wageBase, rule.kesCap);
     const jpBase = Math.min(wageBase, rule.jpCap);
     const classIndex = Math.min(Math.max(input.jkkClass, 1), rule.jkkByClass.length) - 1;
-    if (input.bpjsKesEnabled) {
+    const enrolled = input.enrollment;
+    const jknOn = enrolled ? enrolled.jkn : input.bpjsKesEnabled;
+    const jhtOn = enrolled ? enrolled.jht : true;
+    const jpOn = enrolled ? enrolled.jp : true;
+    const jkmOn = enrolled ? enrolled.jkm : true;
+    const jkkOn = enrolled ? enrolled.jkk : true;
+    if (jknOn) {
       const employee = money(kesBase * rule.kesEmployee);
       const employer = money(kesBase * rule.kesEmployer);
       bpjsEmployee += employee;
@@ -688,28 +828,47 @@ export function calculatePay(input: {
       lines.push({ name: "BPJS Kesehatan (employee)", kind: "DEDUCTION", amount: employee });
       lines.push({ name: "BPJS Kesehatan (employer)", kind: "INFO", amount: employer });
     }
-    const jhtEmployee = money(wageBase * rule.jhtEmployee);
-    const jhtEmployer = money(wageBase * rule.jhtEmployer);
-    const jpEmployee = money(jpBase * rule.jpEmployee);
-    const jpEmployer = money(jpBase * rule.jpEmployer);
-    const jkm = money(wageBase * rule.jkmEmployer);
-    const jkk = money(wageBase * rule.jkkByClass[classIndex]);
+    const jhtEmployee = jhtOn ? money(wageBase * rule.jhtEmployee) : 0;
+    const jhtEmployer = jhtOn ? money(wageBase * rule.jhtEmployer) : 0;
+    const jpEmployee = jpOn ? money(jpBase * rule.jpEmployee) : 0;
+    const jpEmployer = jpOn ? money(jpBase * rule.jpEmployer) : 0;
+    const jkm = jkmOn ? money(wageBase * rule.jkmEmployer) : 0;
+    const jkk = jkkOn ? money(wageBase * rule.jkkByClass[classIndex]) : 0;
     bpjsEmployee += jhtEmployee + jpEmployee;
     bpjsEmployer += jhtEmployer + jpEmployer + jkm + jkk;
-    lines.push({ name: "JHT (employee)", kind: "DEDUCTION", amount: jhtEmployee });
-    lines.push({ name: "JP (employee)", kind: "DEDUCTION", amount: jpEmployee });
-    lines.push({ name: "BPJS Ketenagakerjaan (employer)", kind: "INFO", amount: jhtEmployer + jpEmployer + jkm + jkk });
+    if (jhtOn) lines.push({ name: "JHT (employee)", kind: "DEDUCTION", amount: jhtEmployee });
+    if (jpOn) lines.push({ name: "JP (employee)", kind: "DEDUCTION", amount: jpEmployee });
+    if (jhtOn) lines.push({ name: "JHT (employer)", kind: "INFO", amount: jhtEmployer });
+    if (jpOn) lines.push({ name: "JP (employer)", kind: "INFO", amount: jpEmployer });
+    if (jkmOn) lines.push({ name: "JKM (employer)", kind: "INFO", amount: jkm });
+    if (jkkOn) lines.push({ name: "JKK (employer)", kind: "INFO", amount: jkk });
   }
 
   let pph21 = 0;
   if (applyStatutory) {
-    const ptkp = input.rule.ptkpAnnual[input.ptkp];
-    if (ptkp == null) warnings.push(`PTKP status ${input.ptkp} is not in the active platform rule, so PPh 21 was not calculated.`);
-    else {
-      const annualTaxable = Math.max(0, (earnings - bpjsEmployee) * 12 - ptkp);
-      pph21 = money(progressiveAnnualTax(annualTaxable, input.rule.progressiveAnnual) / 12);
-      lines.push({ name: "PPh 21", kind: "DEDUCTION", amount: pph21 });
-    }
+    const pensionThisPeriod = lines.find((line) => line.name === "JP (employee)")?.amount ?? 0;
+    const withheld = withholdPph21({
+      kind: input.kind,
+      earnings,
+      ptkpStatus: input.ptkp,
+      ptkpAnnual: input.rule.ptkpAnnual,
+      brackets: input.rule.progressiveAnnual,
+      pensionThisPeriod,
+      employmentType: input.employmentType,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      lastWorkingDay: input.lastWorkingDay,
+      priorGross: input.priorGross,
+      priorPph: input.priorPph,
+      priorMonths: input.priorMonths,
+      priorPension: input.priorPension,
+      sameMonthGross: input.sameMonthGross,
+      sameMonthPph: input.sameMonthPph,
+      sameMonthKnown: input.sameMonthKnown,
+    });
+    warnings.push(...withheld.warnings);
+    pph21 = withheld.amount;
+    if (pph21 !== 0) lines.push({ name: "PPh 21", kind: "DEDUCTION", amount: pph21 });
   }
 
   const deduction = lines.filter((line) => line.kind === "DEDUCTION").reduce((sum, line) => sum + line.amount, 0);

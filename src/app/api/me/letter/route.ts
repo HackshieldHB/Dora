@@ -3,6 +3,7 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { getCtx } from "@/lib/context";
 import { prisma } from "@/lib/db";
 import { todayJakarta } from "@/lib/format";
+import { contentDisposition } from "@/lib/http";
 
 export async function GET() {
   const ctx = await getCtx();
@@ -41,7 +42,7 @@ export async function GET() {
   return new NextResponse(Buffer.from(bytes), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="surat-keterangan-${employee.employeeCode}.pdf"`,
+      "Content-Disposition": contentDisposition("attachment", `surat-keterangan-${employee.employeeCode}.pdf`),
     },
   });
 }

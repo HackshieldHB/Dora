@@ -9,7 +9,7 @@ export default async function PayrollLoansPage({ searchParams }: { searchParams:
   const ctx = await requirePerm("payroll.prepare");
   const params = await searchParams;
   const loans = await prisma.employeeLoan.findMany({
-    where: { companyId: ctx.companyId || "", status: { in: ["ACTIVE", "CLOSED"] } },
+    where: { companyId: ctx.companyId || "", status: { in: ["ACTIVE", "CLOSED", "PAID_OFF"] } },
     include: { employee: true, installments: true },
     orderBy: { createdAt: "desc" },
   });
@@ -19,12 +19,12 @@ export default async function PayrollLoansPage({ searchParams }: { searchParams:
     orderBy: { expenseDate: "desc" },
   });
   const periods = await prisma.payrollPeriod.findMany({
-    where: { companyId: ctx.companyId || "", status: { in: ["DRAFT", "PROCESSED"] } },
+    where: { companyId: ctx.companyId || "", status: { in: ["DRAFT", "PROCESSED", "NEEDS_REVISION"] }, kind: "REGULAR" },
     orderBy: { startDate: "desc" },
   });
   return (
     <div>
-      <PageTitle title="Employee Loans" subtitle="Post one installment, or an approved reimbursement, into a draft or processed period. Recalculate that period afterwards. This does not change the pay formula." />
+      <PageTitle title="Employee Loans" subtitle="An approved loan is deducted in the approval month and the months after it. Recalculate a draft payroll to add the installment. The balance changes only after that payroll is locked. This does not change the pay formula." />
       <Banner ok={params.ok} error={params.error} />
       <div className="card table-wrap">
         {loans.length === 0 ? <p className="empty"><Tx text={"No approved loans."} /></p> : (

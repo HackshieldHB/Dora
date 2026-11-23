@@ -8,6 +8,12 @@ export function formatLongDate(iso: string, locale = "en"): string {
   return `${Number(day)} ${names[Number(month) - 1]} ${year}`;
 }
 
+export function formatMonth(month: string, locale = "en"): string {
+  if (!/^\d{4}-\d{2}$/.test(month)) return month || "—";
+  const names = locale === "id" ? MONTHS_ID : MONTHS_EN;
+  return `${names[Number(month.slice(5, 7)) - 1]} ${month.slice(0, 4)}`;
+}
+
 export function formatIdr(value: number): string {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(value);
 }

@@ -39,9 +39,14 @@ function loadLeaflet() {
       const css = document.createElement("link");
       css.rel = "stylesheet";
       css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      // Subresource Integrity: the browser refuses the file if unpkg ever serves different bytes.
+      css.integrity = "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=";
+      css.crossOrigin = "anonymous";
       document.head.appendChild(css);
       const script = document.createElement("script");
       script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      script.integrity = "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=";
+      script.crossOrigin = "anonymous";
       script.onload = () => (window.L ? resolve(window.L) : reject(new Error("map")));
       script.onerror = () => reject(new Error("map"));
       document.body.appendChild(script);

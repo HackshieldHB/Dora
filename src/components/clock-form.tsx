@@ -9,12 +9,13 @@ type Direction = "in" | "out";
 const GPS_ERROR = "Location could not be detected. Turn on GPS and allow location access to continue attendance.";
 const CAMERA_ERROR = "Camera permission is required. Allow camera access to continue attendance. Nothing was saved.";
 
-async function readLocation(): Promise<{ lat: number; lng: number }> {
+async function readLocation(): Promise<{ lat: number; lng: number; accuracy: number | null }> {
   if (!navigator.geolocation) throw new Error("gps");
   const position = await new Promise<GeolocationPosition>((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
   });
-  return { lat: position.coords.latitude, lng: position.coords.longitude };
+  const accuracy = Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null;
+  return { lat: position.coords.latitude, lng: position.coords.longitude, accuracy };
 }
 
 async function openCamera(): Promise<MediaStream> {
@@ -32,7 +33,7 @@ export function ClockForm({ alreadyIn = false }: { alreadyIn?: boolean }) {
   const [step, setStep] = useState<"idle" | "live" | "preview">("idle");
   const [direction, setDirection] = useState<Direction | "">("");
   const [message, setMessage] = useState("");
-  const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
+  const [gps, setGps] = useState<{ lat: number; lng: number; accuracy: number | null } | null>(null);
   const [photoUrl, setPhotoUrl] = useState("");
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -139,6 +140,7 @@ export function ClockForm({ alreadyIn = false }: { alreadyIn?: boolean }) {
     (form.elements.namedItem("lat") as HTMLInputElement).value = String(gps.lat);
     (form.elements.namedItem("lng") as HTMLInputElement).value = String(gps.lng);
     (form.elements.namedItem("direction") as HTMLInputElement).value = direction;
+    (form.elements.namedItem("accuracy") as HTMLInputElement).value = gps.accuracy == null ? "" : String(gps.accuracy);
     setBusy(true);
     form.requestSubmit();
   }
@@ -150,6 +152,7 @@ export function ClockForm({ alreadyIn = false }: { alreadyIn?: boolean }) {
       <TInput type="hidden" name="lat" />
       <TInput type="hidden" name="lng" />
       <TInput type="hidden" name="direction" />
+      <TInput type="hidden" name="accuracy" />
       <TInput name="photo" type="file" accept="image/jpeg" hidden />
       <ol className="steps">
         <li className={gps ? "done" : ""}><Tx text={"1. Location"} /></li>

@@ -9,7 +9,14 @@
     "test": "vitest run",
     "db:setup": "prisma db push && tsx prisma/seed.ts",
     "verify": "tsx scripts/verify.ts",
-    "lint": "next lint"
+    "lint": "next lint",
+    "setup:production": "tsx scripts/setup-production.ts",
+    "encrypt-data": "tsx scripts/encrypt-data.ts",
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/restore.ts",
+    "license:keygen": "tsx scripts/release/keygen.ts",
+    "license:issue": "tsx scripts/release/issue-license.ts",
+    "release:build": "powershell -ExecutionPolicy Bypass -File scripts/release/build-release.ps1"
   },
   "dependencies": {
     "@prisma/client": "^6.19.0",
@@ -28,12 +35,20 @@
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "esbuild": "0.28.2",
     "eslint": "^9.39.0",
     "eslint-config-next": "^15.5.6",
+    "javascript-obfuscator": "5.2.1",
     "prisma": "^6.19.0",
     "tailwindcss": "^4.1.16",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true,
+    "esbuild@0.28.2": true
   }
 }

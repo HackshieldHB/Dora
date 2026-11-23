@@ -8,7 +8,7 @@ import { todayJakarta } from "@/lib/format";
 import { saveEmployeeFile } from "@/lib/files";
 import { employeeWhere, requireCompany } from "./scope";
 import { lockedPeriodForDate } from "./access";
-import { addAdjustment, recordAdjustment } from "./payroll";
+import { queueLoanInstallment, recordAdjustment } from "./payroll";
 import { commitApproval, planApproval, stageDecision } from "./workflow";
 
 async function ownEmployee(ctx: Ctx) {
@@ -296,7 +296,13 @@ export async function decideLoan(ctx: Ctx, loanId: string, decision: "APPROVED" 
   if (!task || !hasPerm(ctx, "approvals.act")) throw new Error("This loan is not assigned to you.");
   await prisma.employeeLoan.update({
     where: { id: loan.id },
-    data: { status: decision === "APPROVED" ? "ACTIVE" : "REJECTED", decisionNote: note, approverId: ctx.userId, remaining: loan.amount },
+    data: {
+      status: decision === "APPROVED" ? "ACTIVE" : "REJECTED",
+      decisionNote: note,
+      approverId: ctx.userId,
+      remaining: loan.amount,
+      startMonth: decision === "APPROVED" ? todayJakarta().slice(0, 7) : "",
+    },
   });
   await prisma.approvalTask.update({ where: { id: task.id }, data: { status: "DONE" } });
   await prisma.approvalDecision.create({ data: { taskId: task.id, actorId: ctx.userId, decision, note } });
@@ -378,30 +384,8 @@ export async function decideClaim(ctx: Ctx, claimId: string, decision: "APPROVED
 }
 
 export async function postLoanInstallment(ctx: Ctx, loanId: string, periodId: string) {
-  const companyId = requireCompany(ctx);
-  const loan = await prisma.employeeLoan.findFirst({ where: { id: loanId, companyId, status: "ACTIVE" }, include: { employee: true } });
-  if (!loan || loan.remaining <= 0) throw new Error("There is no active balance on this loan.");
-  const taken = await prisma.loanInstallment.findUnique({ where: { loanId_periodId: { loanId: loan.id, periodId } } });
-  if (taken) throw new Error("This loan already has an installment in that period.");
-  const amount = Math.min(loan.remaining, loan.installment);
-  const remaining = loan.remaining - amount;
-  await prisma.loanInstallment.create({ data: { loanId: loan.id, periodId, amount } });
-  try {
-    await addAdjustment(ctx, {
-      periodId,
-      employeeId: loan.employeeId,
-      name: "Employee loan",
-      kind: "DEDUCTION",
-      amount,
-      reason: `Loan installment for ${loan.employee.fullName}`,
-    });
-    await prisma.employeeLoan.update({ where: { id: loan.id }, data: { remaining, status: remaining === 0 ? "CLOSED" : "ACTIVE" } });
-  } catch (error) {
-    await prisma.loanInstallment.deleteMany({ where: { loanId: loan.id, periodId } });
-    throw error;
-  }
-  await audit(ctx, "loan.installment", "EmployeeLoan", loan.id, String(amount));
-  return "Installment added. Recalculate the payroll period before approval.";
+  await queueLoanInstallment(ctx, loanId, periodId);
+  return "Installment added. Recalculate the payroll period before approval. The balance changes only after the payroll is locked.";
 }
 
 async function canTouchGoal(ctx: Ctx, goal: { employeeId: string; departmentId: string }) {
@@ -412,7 +396,7 @@ async function canTouchGoal(ctx: Ctx, goal: { employeeId: string; departmentId: 
   if (!owner) throw new Error("You cannot update this goal.");
 }
 
-export async function createGoal(ctx: Ctx, input: { employeeId: string; team: boolean; title: string; metric: string; unit: string; target: number; startDate: string; endDate: string }) {
+export async function createGoal(ctx: Ctx, input: { employeeId: string; team: boolean; title: string; metric: string; unit: string; target: number; startDate: string; endDate: string; weight?: number; direction?: string; submit?: boolean }) {
   const employee = await ownEmployee(ctx);
   const title = input.title.trim();
   const metric = input.metric.trim();
@@ -425,6 +409,9 @@ export async function createGoal(ctx: Ctx, input: { employeeId: string; team: bo
   let departmentId = "";
   let assignedById = "";
   let status = "DRAFT";
+  let approvalStatus = "";
+  let weight = 0;
+  let direction = "HIGHER";
   if (input.team) {
     if (!employee.departmentId) throw new Error("A team goal needs your department.");
     const reports = await prisma.employee.count({ where: { managerId: employee.id, departmentId: employee.departmentId } });
@@ -433,13 +420,16 @@ export async function createGoal(ctx: Ctx, input: { employeeId: string; team: bo
     assignedById = employee.id;
     status = "OPEN";
   } else if (input.employeeId && input.employeeId !== employee.id) {
-    const report = await prisma.employee.findFirst({ where: { id: input.employeeId, companyId: employee.companyId, managerId: employee.id } });
-    if (!report && !hasPerm(ctx, "employees.manage")) throw new Error("You can assign a goal only to your own team member.");
-    const allowed = report || await prisma.employee.findFirst({ where: { id: input.employeeId, companyId: employee.companyId } });
-    if (!allowed) throw new Error("That person is not in your company.");
-    employeeId = allowed.id;
+    const report = await prisma.employee.findFirst({ where: { id: input.employeeId, companyId: employee.companyId, managerId: employee.id, status: "ACTIVE" } });
+    if (!report) throw new Error("You can assign a KPI only to someone who reports to you.");
+    if (employee.departmentId && report.departmentId !== employee.departmentId) throw new Error("You can assign a KPI only to someone in your division.");
+    if (!Number.isInteger(input.weight) || (input.weight ?? 0) < 1 || (input.weight ?? 0) > 100) throw new Error("KPI weight must be a whole number from 1 to 100.");
+    direction = input.direction === "LOWER" || input.direction === "MILESTONE" ? input.direction : "HIGHER";
+    employeeId = report.id;
     assignedById = employee.id;
-    status = "OPEN";
+    approvalStatus = "DRAFT";
+    weight = input.weight ?? 0;
+    status = "DRAFT";
   }
   const goal = await prisma.goal.create({
     data: {
@@ -454,15 +444,105 @@ export async function createGoal(ctx: Ctx, input: { employeeId: string; team: bo
       startDate: input.startDate,
       endDate: input.endDate,
       status,
+      approvalStatus,
+      weight,
+      direction,
     },
   });
   await audit(ctx, "goal.create", "Goal", goal.id, title);
-  return assignedById ? "Goal assigned." : "Goal saved as a draft. Submit it when the wording is final.";
+  if (approvalStatus === "DRAFT" && input.submit) return submitKpi(ctx, goal.id);
+  return approvalStatus ? "KPI saved as a draft." : "Goal saved as a draft. Submit it when the wording is final.";
+}
+
+async function kpiApprover(ctx: Ctx, makerId: string) {
+  const maker = await prisma.employee.findFirst({ where: { id: makerId, companyId: requireCompany(ctx) } });
+  if (!maker?.managerId) throw new Error("Submit for approval needs a direct supervisor on your employee record.");
+  const boss = await prisma.user.findFirst({ where: { employeeId: maker.managerId, companyId: maker.companyId, status: "ACTIVE" }, include: { role: true, employee: true } });
+  if (!boss) throw new Error("No active direct supervisor is available to approve this KPI.");
+  if (boss.id === ctx.userId) throw new Error("You cannot approve your own KPI.");
+  const permissions = JSON.parse(boss.role.permissions) as string[];
+  if (!permissions.includes("approvals.act")) throw new Error("The direct supervisor does not have permission to approve a KPI. A company admin can grant Approve requests on that role.");
+  return boss;
+}
+
+export async function submitKpi(ctx: Ctx, goalId: string) {
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId: requireCompany(ctx), assignedById: ctx.employeeId || "", approvalStatus: { in: ["DRAFT", "RETURNED"] } } });
+  if (!goal) throw new Error("Only your draft KPI can be submitted.");
+  const boss = await kpiApprover(ctx, goal.assignedById);
+  await prisma.goal.update({ where: { id: goal.id }, data: { approvalStatus: "PENDING", approverId: boss.id, decisionNote: "" } });
+  await prisma.approvalTask.create({
+    data: { companyId: goal.companyId, module: "KPI", subjectId: goal.id, assigneeId: boss.id, originalAssigneeId: boss.id, requesterId: ctx.userId, title: `KPI: ${goal.title}`, href: "/approvals/pending" },
+  });
+  await notify(boss.id, "KPI waiting for approval", goal.title, "/approvals/pending");
+  await audit(ctx, "goal.submit", "Goal", goal.id, "PENDING");
+  return `KPI sent to ${boss.employee?.fullName || "your direct supervisor"}.`;
+}
+
+export async function decideKpi(ctx: Ctx, goalId: string, decision: "APPROVED" | "REJECTED" | "RETURNED", note: string) {
+  decision = assertDecision(decision, ["APPROVED", "REJECTED", "RETURNED"]);
+  if (decision !== "APPROVED" && !note.trim()) throw new Error("A return or rejection needs a reason.");
+  const companyId = requireCompany(ctx);
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId, approvalStatus: "PENDING" } });
+  if (!goal) throw new Error("This KPI is not waiting for approval.");
+  const task = await prisma.approvalTask.findFirst({ where: { companyId, module: "KPI", subjectId: goal.id, status: "PENDING", assigneeId: ctx.userId } });
+  if (!task || !hasPerm(ctx, "approvals.act") || goal.approverId !== ctx.userId) throw new Error("This KPI is not assigned to you.");
+  if (goal.assignedById === ctx.employeeId) throw new Error("You cannot approve your own KPI.");
+  const approvalStatus = decision === "APPROVED" ? "APPROVED" : decision === "REJECTED" ? "REJECTED" : "RETURNED";
+  await prisma.goal.update({
+    where: { id: goal.id },
+    data: { approvalStatus, decisionNote: note, status: decision === "APPROVED" ? "OPEN" : "DRAFT", evalStatus: decision === "APPROVED" ? "IN_PROGRESS" : "" },
+  });
+  await prisma.approvalTask.update({ where: { id: task.id }, data: { status: "DONE" } });
+  await prisma.approvalDecision.create({ data: { taskId: task.id, actorId: ctx.userId, decision, note } });
+  const owner = await prisma.user.findFirst({ where: { employeeId: goal.assignedById } });
+  if (owner) await notify(owner.id, `KPI ${approvalStatus.toLowerCase()}`, note || goal.title, "/goals");
+  await audit(ctx, "goal.decide", "Goal", goal.id, decision);
+  return "KPI decision saved.";
+}
+
+export async function reviewKpi(ctx: Ctx, goalId: string, input: { decision: "ACCEPT" | "RETURNED"; score?: number; feedback?: string; note: string }) {
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId: requireCompany(ctx), assignedById: ctx.employeeId || "", approvalStatus: "APPROVED", evalStatus: "SUBMITTED" } });
+  if (!goal) throw new Error("This KPI is not waiting for your review.");
+  if (input.decision === "RETURNED") {
+    if (!input.note.trim()) throw new Error("A return for revision needs a reason.");
+    await prisma.goal.update({ where: { id: goal.id }, data: { evalStatus: "RETURNED", decisionNote: input.note.trim() } });
+    const owner = await prisma.user.findFirst({ where: { employeeId: goal.employeeId } });
+    if (owner) await notify(owner.id, "KPI returned", input.note, "/me/goals?tab=assigned");
+    return "Realization returned to the employee.";
+  }
+  if (!Number.isInteger(input.score) || (input.score ?? 0) < 0 || (input.score ?? 0) > 100) throw new Error("The score must be a whole number from 0 to 100.");
+  const boss = await kpiApprover(ctx, goal.assignedById);
+  await prisma.goal.update({ where: { id: goal.id }, data: { evalStatus: "PENDING_FINAL", score: input.score ?? 0, feedback: (input.feedback || "").trim().slice(0, 500), approverId: boss.id } });
+  await prisma.approvalTask.create({
+    data: { companyId: goal.companyId, module: "KPI_EVAL", subjectId: goal.id, assigneeId: boss.id, originalAssigneeId: boss.id, requesterId: ctx.userId, title: `KPI evaluation: ${goal.title}`, href: "/approvals/pending" },
+  });
+  await notify(boss.id, "KPI evaluation waiting for approval", goal.title, "/approvals/pending");
+  await audit(ctx, "goal.review", "Goal", goal.id, String(input.score));
+  return "Evaluation sent to your direct supervisor.";
+}
+
+export async function decideKpiEval(ctx: Ctx, goalId: string, decision: "APPROVED" | "REJECTED" | "RETURNED", note: string) {
+  decision = assertDecision(decision, ["APPROVED", "REJECTED", "RETURNED"]);
+  if (decision !== "APPROVED" && !note.trim()) throw new Error("A return or rejection needs a reason.");
+  const companyId = requireCompany(ctx);
+  const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId, evalStatus: "PENDING_FINAL" } });
+  if (!goal) throw new Error("This evaluation is not waiting for approval.");
+  const task = await prisma.approvalTask.findFirst({ where: { companyId, module: "KPI_EVAL", subjectId: goal.id, status: "PENDING", assigneeId: ctx.userId } });
+  if (!task || !hasPerm(ctx, "approvals.act") || goal.approverId !== ctx.userId) throw new Error("This evaluation is not assigned to you.");
+  const evalStatus = decision === "APPROVED" ? "FINALIZED" : decision === "REJECTED" ? "REJECTED" : "SUBMITTED";
+  await prisma.goal.update({ where: { id: goal.id }, data: { evalStatus, decisionNote: note } });
+  await prisma.approvalTask.update({ where: { id: task.id }, data: { status: "DONE" } });
+  await prisma.approvalDecision.create({ data: { taskId: task.id, actorId: ctx.userId, decision, note } });
+  const notifyEmployee = decision !== "RETURNED";
+  const recipient = await prisma.user.findFirst({ where: { employeeId: notifyEmployee ? goal.employeeId : goal.assignedById, status: "ACTIVE" } });
+  if (recipient) await notify(recipient.id, `KPI evaluation ${decision.toLowerCase()}`, note || goal.title, notifyEmployee ? "/me/goals?tab=assigned" : "/goals");
+  await audit(ctx, "goal.finalize", "Goal", goal.id, decision);
+  return "Evaluation decision saved.";
 }
 
 export async function reviseGoal(ctx: Ctx, goalId: string, input: { title: string; metric: string; unit: string; target: number; startDate: string; endDate: string }) {
   const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId: requireCompany(ctx) } });
-  if (!goal || goal.status !== "DRAFT" || goal.employeeId !== ctx.employeeId) throw new Error("Only your own draft can be edited.");
+  if (!goal || goal.status !== "DRAFT" || goal.employeeId !== ctx.employeeId || goal.approvalStatus) throw new Error("Only your own draft can be edited.");
   if (!input.title.trim() || !input.metric.trim()) throw new Error("A goal needs a title and what is being measured.");
   if (!Number.isFinite(input.target) || input.target <= 0) throw new Error("The target must be greater than zero.");
   if (input.endDate < input.startDate) throw new Error("Choose a start date and an end date.");
@@ -476,16 +556,18 @@ export async function reviseGoal(ctx: Ctx, goalId: string, input: { title: strin
 
 export async function submitGoal(ctx: Ctx, goalId: string) {
   const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId: requireCompany(ctx), employeeId: ctx.employeeId || "", status: "DRAFT" } });
-  if (!goal) throw new Error("Only your own draft can be submitted.");
+  if (!goal || goal.approvalStatus) throw new Error("Only your own draft can be submitted.");
   await prisma.goal.update({ where: { id: goal.id }, data: { status: "OPEN" } });
   await audit(ctx, "goal.submit", "Goal", goal.id, goal.title);
   return "Goal submitted. The wording is now locked. You can still change the target and the progress.";
 }
 
-export async function updateGoal(ctx: Ctx, goalId: string, input: { current: number; target?: number; status: string }) {
+export async function updateGoal(ctx: Ctx, goalId: string, input: { current: number; target?: number; status: string; note?: string; submit?: boolean }) {
   const companyId = requireCompany(ctx);
   const goal = await prisma.goal.findFirst({ where: { id: goalId, companyId } });
   if (!goal) throw new Error("Goal not found.");
+  if (goal.approvalStatus && goal.approvalStatus !== "APPROVED") throw new Error("This KPI is not active yet.");
+  if (goal.evalStatus === "FINALIZED" || goal.evalStatus === "PENDING_FINAL" || goal.evalStatus === "SUBMITTED") throw new Error("This KPI is locked while it is in review.");
   if (goal.status === "DRAFT") throw new Error("Submit the goal before updating progress.");
   await canTouchGoal(ctx, goal);
   if (!Number.isFinite(input.current) || input.current < 0) throw new Error("Progress cannot be negative.");
@@ -494,13 +576,24 @@ export async function updateGoal(ctx: Ctx, goalId: string, input: { current: num
   const manager = goal.assignedById === ctx.employeeId || hasPerm(ctx, "employees.manage");
   if (input.status === "CANCELLED" && !manager && !mine) throw new Error("You cannot cancel this goal.");
   const status = input.status === "DONE" || input.status === "CANCELLED" ? input.status : goal.status;
-  const data: { current: number; status: string; target?: number } = { current: input.current, status };
-  if (input.target !== undefined) {
+  const data: { current: number; status: string; target?: number; progressNote?: string; evalStatus?: string } = { current: input.current, status };
+  if (input.note !== undefined) data.progressNote = input.note.trim().slice(0, 500);
+  if (goal.approvalStatus === "APPROVED") {
+    if (input.target !== undefined && input.target !== goal.target) throw new Error("An approved KPI target cannot be changed here.");
+    if (input.submit) {
+      data.evalStatus = "SUBMITTED";
+      data.status = goal.status;
+    }
+  } else if (input.target !== undefined) {
     if (!mine && !manager) throw new Error("Only the owner or the assigning manager can change the target.");
     if (!Number.isFinite(input.target) || input.target <= 0) throw new Error("The target must be greater than zero.");
     data.target = input.target;
   }
   await prisma.goal.update({ where: { id: goal.id }, data });
+  if (input.submit && goal.approvalStatus === "APPROVED") {
+    const manager = await prisma.user.findFirst({ where: { employeeId: goal.assignedById, status: "ACTIVE" } });
+    if (manager) await notify(manager.id, "KPI realization submitted", goal.title, "/goals");
+  }
   await audit(ctx, "goal.update", "Goal", goal.id, String(input.current));
-  return "Goal updated.";
+  return input.submit ? "Realization submitted to your manager." : "Goal updated.";
 }
